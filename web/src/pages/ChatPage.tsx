@@ -24,6 +24,7 @@ export default function ChatPage() {
   const [isLoading, setIsLoading] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [loadError, setLoadError] = useState('');
+  const [pendingDelete, setPendingDelete] = useState<{ path: string; label: string } | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
@@ -38,6 +39,13 @@ export default function ChatPage() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const activeRequestRef = useRef(0);
+  const activeAbortRef = useRef<AbortController | null>(null);
+
+  const cancelActiveGeneration = useCallback(() => {
+    activeAbortRef.current?.abort();
+    activeAbortRef.current = null;
+    activeRequestRef.current += 1;
+  }, []);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -63,8 +71,11 @@ export default function ChatPage() {
   useEffect(() => {
     refreshCheckpoints();
     window.addEventListener('focus', refreshCheckpoints);
-    return () => window.removeEventListener('focus', refreshCheckpoints);
-  }, [refreshCheckpoints]);
+    return () => {
+      window.removeEventListener('focus', refreshCheckpoints);
+      cancelActiveGeneration();
+    };
+  }, [refreshCheckpoints, cancelActiveGeneration]);
 
   useEffect(() => {
     if (isLoaded) return;
@@ -73,11 +84,11 @@ export default function ChatPage() {
 
   const handleLoad = async () => {
     if (!selectedCheckpoint) return;
+    cancelActiveGeneration();
     setIsLoading(true);
     setLoadError('');
     try {
       await loadModel(selectedCheckpoint);
-      activeRequestRef.current += 1;
       setMessages([]);
       setInput('');
       setIsGenerating(false);
@@ -94,8 +105,8 @@ export default function ChatPage() {
   };
 
   const handleUnload = async () => {
+    cancelActiveGeneration();
     await unloadModel();
-    activeRequestRef.current += 1;
     setIsLoaded(false);
     setIsGenerating(false);
     setLoadedCheckpoint('');
@@ -107,19 +118,22 @@ export default function ChatPage() {
     if (!selectedCheckpoint || isDeleting) return;
     const checkpoint = checkpoints.find((item) => item.path === selectedCheckpoint);
     const label = checkpoint ? `${checkpoint.name} (${checkpoint.isSft ? 'SFT' : '预训练'}, step=${checkpoint.step})` : selectedCheckpoint;
-    if (!window.confirm(`确定删除模型 checkpoint？\n\n${label}\n\n该操作会删除本地权重和元数据文件，无法在界面中恢复。`)) {
-      return;
-    }
+    setPendingDelete({ path: selectedCheckpoint, label });
+  };
+
+  const confirmDeleteCheckpoint = async () => {
+    if (!pendingDelete || isDeleting) return;
     setIsDeleting(true);
     setLoadError('');
     try {
-      await deleteCheckpoint(selectedCheckpoint);
-      activeRequestRef.current += 1;
+      cancelActiveGeneration();
+      await deleteCheckpoint(pendingDelete.path);
       setIsLoaded(false);
       setLoadedCheckpoint('');
       setMessages([]);
       setInput('');
       setIsGenerating(false);
+      setPendingDelete(null);
       refreshCheckpoints();
     } catch (err) {
       setLoadError(err instanceof Error ? err.message : '删除模型失败');
@@ -130,6 +144,9 @@ export default function ChatPage() {
 
   const sendMessage = useCallback(async () => {
     if (!input.trim() || isGenerating || !isLoaded) return;
+    activeAbortRef.current?.abort();
+    const controller = new AbortController();
+    activeAbortRef.current = controller;
     const requestId = activeRequestRef.current + 1;
     activeRequestRef.current = requestId;
 
@@ -199,6 +216,7 @@ export default function ChatPage() {
       const response = await fetch('/api/chat/completions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal,
         body: JSON.stringify({
           messages: updatedMessages,
           temperature: settings.temperature,
@@ -240,17 +258,21 @@ export default function ChatPage() {
         finishStream();
       }
     } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') return;
       updateAssistantMessage(`[错误] 对话请求失败：${error instanceof Error ? error.message : '请重试。'}`);
     } finally {
+      if (activeAbortRef.current === controller) {
+        activeAbortRef.current = null;
+      }
       if (activeRequestRef.current === requestId) {
         setIsGenerating(false);
         setTimeout(() => inputRef.current?.focus(), 0);
       }
     }
-  }, [input, isGenerating, isLoaded, messages, settings]);
+  }, [input, isGenerating, isLoaded, messages, settings, cancelActiveGeneration]);
 
   const clearChat = () => {
-    activeRequestRef.current += 1;
+    cancelActiveGeneration();
     setMessages([]);
     setIsGenerating(false);
   };
@@ -265,15 +287,20 @@ export default function ChatPage() {
   return (
     <div className="flex flex-col h-screen">
       {/* Header */}
-      <div className="px-6 py-4 border-b border-border bg-surface-light flex items-center justify-between shrink-0">
-        <div className="flex items-center gap-3">
-          <MessageCircle className="w-5 h-5 text-primary" />
-          <h1 className="text-lg font-bold">模型对话</h1>
-          {isLoaded && (
-            <span className="px-2 py-0.5 bg-success/20 text-success text-xs rounded-full">
-              已加载
-            </span>
-          )}
+      <div className="px-5 py-6 lg:px-6 border-b border-border bg-surface-light flex items-center justify-between shrink-0">
+        <div>
+          <div className="flex items-center gap-3 mb-2">
+            <MessageCircle className="w-6 h-6 text-primary" />
+            <h1 className="text-2xl font-bold">模型对话</h1>
+            {isLoaded && (
+              <span className="px-2 py-0.5 bg-success/20 text-success text-xs rounded-full">
+                已加载
+              </span>
+            )}
+          </div>
+          <p className="text-text-muted">
+            加载本地模型进行多轮对话，验证回答质量、指令跟随和推理表现。
+          </p>
         </div>
         <div className="flex items-center gap-2">
           <button
@@ -518,6 +545,49 @@ export default function ChatPage() {
           </button>
         </div>
       </div>
+      {pendingDelete && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4"
+          onClick={() => !isDeleting && setPendingDelete(null)}
+        >
+          <div
+            className="w-full max-w-md rounded-xl border border-border bg-surface-light p-5 shadow-xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-start gap-3">
+              <div className="mt-0.5 rounded-full bg-error/10 p-2 text-error">
+                <Trash2 className="w-5 h-5" />
+              </div>
+              <div>
+                <h2 className="text-base font-semibold text-text">确认删除模型？</h2>
+                <p className="mt-2 text-sm text-text-muted">
+                  将删除本地 checkpoint，无法在界面中恢复。
+                </p>
+                <p className="mt-3 rounded-lg border border-border bg-surface px-3 py-2 text-xs text-text-muted">
+                  {pendingDelete.label}
+                </p>
+              </div>
+            </div>
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                onClick={() => setPendingDelete(null)}
+                disabled={isDeleting}
+                className="px-4 py-2 rounded-lg text-sm text-text-muted hover:text-text hover:bg-surface-lighter disabled:opacity-50"
+              >
+                取消
+              </button>
+              <button
+                onClick={confirmDeleteCheckpoint}
+                disabled={isDeleting}
+                className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-error text-white text-sm font-medium hover:bg-error/80 disabled:opacity-50"
+              >
+                {isDeleting && <Loader2 className="w-4 h-4 animate-spin" />}
+                确认删除
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

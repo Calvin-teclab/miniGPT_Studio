@@ -68,6 +68,7 @@ export interface LossPoint {
 // Checkpoint info
 export interface Checkpoint {
   path: string;
+  checkpointId?: string;
   name: string;
   modelName?: string;
   displayName?: string;

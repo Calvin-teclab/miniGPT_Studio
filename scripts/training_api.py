@@ -34,6 +34,7 @@ from scripts.quickstart import (
     get_music_base_dir,
     get_stage_env,
     list_checkpoints as _list_checkpoints,
+    resolve_checkpoint_id,
     delete_checkpoint as _delete_checkpoint,
     DeleteCheckpointRequest,
     chat_load as _chat_load,
@@ -625,21 +626,10 @@ async def api_eval_benchmark(checkpoint: str = "", benchmarks: str = "arc_easy")
         try:
             yield f"data: {json.dumps({'type': 'log', 'text': 'Starting benchmark evaluation...'})}\n\n"
 
-            # Parse checkpoint descriptor (format: "depth:step:source" or just use loaded model)
-            data_domain, depth, step, source = "general", 4, None, "sft"
-            if checkpoint:
-                parts = checkpoint.split(":")
-                offset = 1 if parts and not parts[0].isdigit() else 0
-                if offset:
-                    data_domain = parts[0]
-                if len(parts) > offset and parts[offset].isdigit():
-                    depth = int(parts[offset])
-                if len(parts) > offset + 1 and parts[offset + 1] and parts[offset + 1] != "latest":
-                    step = int(parts[offset + 1])
-                if len(parts) > offset + 2:
-                    source = parts[offset + 2]
+            data_domain, depth, step, source, model_name = _parse_checkpoint_descriptor(checkpoint)
 
-            yield f"data: {json.dumps({'type': 'log', 'text': f'Loading model domain={data_domain} depth={depth} step={step} source={source}...'})}\n\n"
+            model_label = model_name if model_name is not None else "latest/default"
+            yield f"data: {json.dumps({'type': 'log', 'text': f'Loading model domain={data_domain} depth={depth} step={step} source={source} model={model_label}...'})}\n\n"
 
             # Run evaluation as subprocess to avoid blocking
             python = sys.executable
@@ -662,6 +652,8 @@ async def api_eval_benchmark(checkpoint: str = "", benchmarks: str = "arc_easy")
                 ]
                 if step is not None:
                     cmd.append(f"--step={step}")
+                if model_name is not None:
+                    cmd.append(f"--model-name={model_name}")
 
                 proc = await asyncio.create_subprocess_exec(
                     *cmd,
@@ -730,8 +722,17 @@ class ExternalEvalRequest(BaseModel):
 
 
 def _parse_checkpoint_descriptor(checkpoint: str):
-    data_domain, depth, step, source = "general", 4, None, "sft"
+    data_domain, depth, step, source, model_name = "general", 4, None, "sft", None
     if checkpoint:
+        if checkpoint.startswith("cp_"):
+            resolved = resolve_checkpoint_id(checkpoint)
+            return (
+                resolved["data_domain"],
+                resolved["depth"],
+                resolved["step"],
+                resolved["source"],
+                resolved["model_name"],
+            )
         parts = checkpoint.split(":")
         offset = 1 if parts and not parts[0].isdigit() else 0
         if offset:
@@ -742,7 +743,10 @@ def _parse_checkpoint_descriptor(checkpoint: str):
             step = int(parts[offset + 1])
         if len(parts) > offset + 2 and parts[offset + 2]:
             source = parts[offset + 2]
-    return data_domain, depth, step, source
+        if len(parts) > offset + 3:
+            from urllib.parse import unquote
+            model_name = unquote(parts[offset + 3] or "")
+    return data_domain, depth, step, source, model_name
 
 
 @api.post("/eval/external")
@@ -756,7 +760,7 @@ async def api_eval_external(request: ExternalEvalRequest):
     """
     import scripts.quickstart as qs
 
-    data_domain, depth, step, source = _parse_checkpoint_descriptor(request.checkpoint)
+    data_domain, depth, step, source, model_name = _parse_checkpoint_descriptor(request.checkpoint)
     needs_load = (
         qs.loaded_engine is None
         or qs.loaded_tokenizer is None
@@ -764,9 +768,10 @@ async def api_eval_external(request: ExternalEvalRequest):
         or qs.loaded_step != step
         or qs.loaded_source != source
         or qs.loaded_domain != data_domain
+        or qs.loaded_model_name != model_name
     )
     if needs_load:
-        await _chat_load(LoadRequest(data_domain=data_domain, depth=depth, step=step, source=source))
+        await _chat_load(LoadRequest(data_domain=data_domain, depth=depth, step=step, source=source, model_name=model_name))
 
     if qs.loaded_engine is None or qs.loaded_tokenizer is None:
         raise HTTPException(status_code=400, detail="No model loaded. POST /api/chat/load first.")

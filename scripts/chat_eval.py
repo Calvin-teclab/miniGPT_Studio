@@ -148,6 +148,8 @@ def main(argv=None):
     parser.add_argument('-a', '--task-name', type=str, default=None,
                         help='Task name (default=all). Use | to split multiple tasks.')
     parser.add_argument('-s', '--step', type=int, default=None, help='Checkpoint step (default: latest)')
+    parser.add_argument('--model-name', type=str, default=None,
+                        help='Optional checkpoint model name for disambiguating same-step runs')
     parser.add_argument('-t', '--temperature', type=float, default=0.0, help='Sampling temperature')
     parser.add_argument('-m', '--max-new-tokens', type=int, default=512, help='Max new tokens')
     parser.add_argument('-n', '--num-samples', type=int, default=1, help='Number of samples per problem')
@@ -161,7 +163,7 @@ def main(argv=None):
 
     # Load model
     from nanochat_mlx.tokenizer import get_tokenizer
-    model = load_model(depth=args.depth, step=args.step, source=args.source)
+    model = load_model(depth=args.depth, step=args.step, source=args.source, model_name=args.model_name)
     tokenizer = get_tokenizer()
     engine = Engine(model, tokenizer)
 

@@ -11,6 +11,7 @@ Usage:
 
 import argparse
 import asyncio
+import base64
 import gc
 import importlib.util
 import json
@@ -60,6 +61,77 @@ loaded_depth = None
 loaded_step = None
 loaded_source = None
 loaded_domain = None
+loaded_model_name = None
+
+
+def _encode_checkpoint_id(data_domain, depth, source, meta_filename):
+    payload = json.dumps(
+        {
+            "data_domain": data_domain,
+            "depth": depth,
+            "source": source,
+            "meta": meta_filename,
+        },
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return "cp_" + base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
+
+
+def _decode_checkpoint_id(checkpoint_id):
+    if not checkpoint_id or not checkpoint_id.startswith("cp_"):
+        raise HTTPException(status_code=400, detail="Invalid checkpoint_id")
+    encoded = checkpoint_id[3:]
+    padded = encoded + "=" * (-len(encoded) % 4)
+    try:
+        payload = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8"))
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Invalid checkpoint_id") from exc
+    required = {"data_domain", "depth", "source", "meta"}
+    if not isinstance(payload, dict) or not required.issubset(payload):
+        raise HTTPException(status_code=400, detail="Invalid checkpoint_id")
+    return payload
+
+
+def resolve_checkpoint_id(checkpoint_id):
+    payload = _decode_checkpoint_id(checkpoint_id)
+    data_domain = str(payload["data_domain"]).lower()
+    source = str(payload["source"]).lower()
+    depth = int(payload["depth"])
+    meta_filename = os.path.basename(str(payload["meta"]))
+    if data_domain not in {"general", "music"}:
+        raise HTTPException(status_code=400, detail="Invalid checkpoint data_domain")
+    if source not in {"base", "sft"}:
+        raise HTTPException(status_code=400, detail="Invalid checkpoint source")
+    if depth <= 0 or not meta_filename.endswith("_meta.json"):
+        raise HTTPException(status_code=400, detail="Invalid checkpoint id payload")
+
+    base = get_music_base_dir() if data_domain == "music" else get_base_dir()
+    dirname = f"d{depth}_sft" if source == "sft" else f"d{depth}"
+    ckpt_dir = os.path.realpath(os.path.join(base, "mlx_checkpoints", dirname))
+    ckpt_root = os.path.realpath(os.path.join(base, "mlx_checkpoints"))
+    if not ckpt_dir.startswith(ckpt_root + os.sep):
+        raise HTTPException(status_code=400, detail="Invalid checkpoint path")
+    meta_path = os.path.realpath(os.path.join(ckpt_dir, meta_filename))
+    if not meta_path.startswith(ckpt_dir + os.sep) or not os.path.isfile(meta_path):
+        raise HTTPException(status_code=404, detail="Checkpoint metadata not found")
+    try:
+        with open(meta_path) as f:
+            meta = json.load(f)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Invalid checkpoint metadata") from exc
+    step = int(meta.get("step", 0))
+    if step <= 0:
+        raise HTTPException(status_code=400, detail="Invalid checkpoint metadata")
+    return {
+        "checkpoint_id": checkpoint_id,
+        "data_domain": data_domain,
+        "depth": depth,
+        "step": step,
+        "source": source,
+        "model_name": meta.get("model_name", ""),
+        "meta_path": meta_path,
+        "ckpt_dir": ckpt_dir,
+    }
 
 METRIC_RE = re.compile(
     r"step\s+(\d+)/(\d+).*?loss:\s*([\d.]+).*?tok/s:\s*([\d,]+)"
@@ -203,7 +275,7 @@ def check_status():
         "train": trained,
         "sft": sft_trained,
         "chat": chat_ready,
-        "chat_model": {"depth": loaded_depth, "step": loaded_step, "source": loaded_source, "data_domain": loaded_domain} if chat_ready else None,
+        "chat_model": {"depth": loaded_depth, "step": loaded_step, "source": loaded_source, "data_domain": loaded_domain, "model_name": loaded_model_name} if chat_ready else None,
         "running": running_process_claimed or (running_process is not None and running_process.returncode is None),
         "music": music,
     }
@@ -546,6 +618,7 @@ async def list_checkpoints():
                             meta = json.load(mf)
                         mtime = os.path.getmtime(meta_path)
                         results.append({
+                            "checkpoint_id": _encode_checkpoint_id(data_domain, depth, source, f),
                             "data_domain": data_domain,
                             "depth": depth,
                             "step": meta.get("step", 0),
@@ -565,19 +638,28 @@ async def list_checkpoints():
 
 
 class DeleteCheckpointRequest(BaseModel):
-    depth: int
-    step: int
+    checkpoint_id: Optional[str] = None
+    depth: int = 0
+    step: int = 0
     source: str = "base"
     data_domain: str = "general"
+    model_name: Optional[str] = None
 
 
 @app.post("/checkpoints/delete")
 async def delete_checkpoint(req: DeleteCheckpointRequest):
     """Delete one checkpoint step and its sidecar metadata/optimizer files."""
-    global loaded_depth, loaded_step, loaded_source, loaded_domain
+    global loaded_depth, loaded_step, loaded_source, loaded_domain, loaded_model_name
 
     data_domain = req.data_domain.lower()
     source = req.source.lower()
+    resolved = resolve_checkpoint_id(req.checkpoint_id) if req.checkpoint_id else None
+    if resolved:
+        data_domain = resolved["data_domain"]
+        source = resolved["source"]
+        req.depth = resolved["depth"]
+        req.step = resolved["step"]
+        req.model_name = resolved["model_name"]
     if data_domain not in {"general", "music"}:
         raise HTTPException(status_code=400, detail="data_domain must be 'general' or 'music'")
     if source not in {"base", "sft"}:
@@ -591,6 +673,7 @@ async def delete_checkpoint(req: DeleteCheckpointRequest):
         and loaded_depth == req.depth
         and loaded_step == req.step
         and loaded_source == source
+        and loaded_model_name == req.model_name
     ):
         _unload_model()
 
@@ -603,10 +686,35 @@ async def delete_checkpoint(req: DeleteCheckpointRequest):
     if not os.path.isdir(ckpt_dir):
         raise HTTPException(status_code=404, detail="Checkpoint directory not found")
 
-    stem = f"step_{req.step:06d}"
+    if resolved:
+        meta_path = resolved["meta_path"]
+    else:
+        matching_meta = []
+        for filename in os.listdir(ckpt_dir):
+            if not filename.endswith("_meta.json"):
+                continue
+            meta_path = os.path.join(ckpt_dir, filename)
+            try:
+                with open(meta_path) as f:
+                    meta = json.load(f)
+            except Exception:
+                continue
+            if meta.get("step") != req.step:
+                continue
+            meta_model_name = meta.get("model_name", "")
+            if req.model_name is None:
+                if meta_model_name:
+                    continue
+            elif meta_model_name != req.model_name:
+                continue
+            matching_meta.append(meta_path)
+        if not matching_meta:
+            raise HTTPException(status_code=404, detail="Checkpoint files not found")
+        meta_path = max(matching_meta, key=os.path.getmtime)
+    stem = os.path.basename(meta_path).replace("_meta.json", "")
     candidates = [
         os.path.join(ckpt_dir, f"{stem}.safetensors"),
-        os.path.join(ckpt_dir, f"{stem}_meta.json"),
+        meta_path,
         os.path.join(ckpt_dir, f"{stem}_optim.safetensors"),
     ]
     existing = [path for path in candidates if os.path.isfile(path)]
@@ -632,15 +740,17 @@ async def delete_checkpoint(req: DeleteCheckpointRequest):
 
 
 class LoadRequest(BaseModel):
+    checkpoint_id: Optional[str] = None
     depth: int = 12
     step: Optional[int] = None
     source: str = "base"
     data_domain: str = "general"
+    model_name: Optional[str] = None
 
 
 def _unload_model():
     """Free the currently loaded chat model and reclaim memory."""
-    global loaded_engine, loaded_tokenizer, loaded_model, loaded_depth, loaded_step, loaded_source, loaded_domain
+    global loaded_engine, loaded_tokenizer, loaded_model, loaded_depth, loaded_step, loaded_source, loaded_domain, loaded_model_name
     loaded_engine = None
     loaded_tokenizer = None
     loaded_model = None
@@ -648,12 +758,21 @@ def _unload_model():
     loaded_step = None
     loaded_source = None
     loaded_domain = None
+    loaded_model_name = None
     gc.collect()
 
 
 @app.post("/chat/load")
 async def chat_load(req: LoadRequest):
-    global loaded_engine, loaded_tokenizer, loaded_model, loaded_depth, loaded_step, loaded_source, loaded_domain
+    global loaded_engine, loaded_tokenizer, loaded_model, loaded_depth, loaded_step, loaded_source, loaded_domain, loaded_model_name
+
+    if req.checkpoint_id:
+        resolved = resolve_checkpoint_id(req.checkpoint_id)
+        req.data_domain = resolved["data_domain"]
+        req.depth = resolved["depth"]
+        req.step = resolved["step"]
+        req.source = resolved["source"]
+        req.model_name = resolved["model_name"]
 
     # Free previous model first to avoid double memory usage
     if loaded_model is not None:
@@ -673,7 +792,7 @@ async def chat_load(req: LoadRequest):
         elif old_base_dir is not None:
             os.environ.pop("NANOCHAT_BASE_DIR", None)
         try:
-            model = load_model(depth=req.depth, step=req.step, source=req.source)
+            model = load_model(depth=req.depth, step=req.step, source=req.source, model_name=req.model_name)
             tokenizer = get_tokenizer()
         finally:
             if old_base_dir is None:
@@ -687,7 +806,8 @@ async def chat_load(req: LoadRequest):
         loaded_step = req.step
         loaded_source = req.source
         loaded_domain = req.data_domain
-        return {"status": "loaded", "depth": req.depth, "source": req.source, "data_domain": req.data_domain}
+        loaded_model_name = req.model_name
+        return {"status": "loaded", "depth": req.depth, "source": req.source, "data_domain": req.data_domain, "model_name": req.model_name}
     except SetupError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

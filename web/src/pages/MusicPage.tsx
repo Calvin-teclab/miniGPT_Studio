@@ -11,8 +11,9 @@ import {
   Sparkles,
   Square,
   Trash2,
+  Upload,
 } from 'lucide-react';
-import { deleteCheckpoint, getCheckpoints, loadModel } from '@/api/client';
+import { deleteCheckpoint, getCheckpoints, loadModel, unloadModel } from '@/api/client';
 import { cn } from '@/lib/utils';
 import type { ChatMessage, Checkpoint } from '@/types';
 
@@ -188,7 +189,8 @@ function getKeyRoot(key: string) {
 }
 
 function isMinorKey(key: string) {
-  return /\b(minor|min|m)\b/i.test(key);
+  const normalized = key.trim();
+  return /\b(minor|min|m)\b/i.test(normalized) || /^[A-G](?:#|b)?m$/i.test(normalized);
 }
 
 function chordTokenToFrequencies(token: string, key: string): number[] {
@@ -328,10 +330,12 @@ export default function MusicPage() {
   const initialConfig = useMemo(() => getInitialMusicConfig(), []);
   const [checkpoints, setCheckpoints] = useState<Checkpoint[]>([]);
   const [selectedCheckpoint, setSelectedCheckpoint] = useState('');
+  const [loadedCheckpoint, setLoadedCheckpoint] = useState('');
   const [isLoaded, setIsLoaded] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
+  const [pendingDelete, setPendingDelete] = useState<{ path: string; label: string } | null>(null);
   const [selectedPreset, setSelectedPreset] = useState(initialConfig.selectedPreset);
   const [style, setStyle] = useState(initialConfig.style);
   const [mood, setMood] = useState(initialConfig.mood);
@@ -400,32 +404,48 @@ export default function MusicPage() {
     if (!selectedCheckpoint) return;
     setIsLoading(true);
     setError('');
+    setNotice('');
     try {
       await loadModel(selectedCheckpoint);
+      setLoadedCheckpoint(selectedCheckpoint);
       setIsLoaded(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : '模型加载失败');
       setIsLoaded(false);
+      setLoadedCheckpoint('');
     } finally {
       setIsLoading(false);
     }
+  };
+
+  const handleUnload = async () => {
+    await unloadModel();
+    setIsLoaded(false);
+    setLoadedCheckpoint('');
+    setIsGenerating(false);
+    setRawOutput('');
+    stopPlayback();
   };
 
   const handleDeleteCheckpoint = async () => {
     if (!selectedCheckpoint || isDeleting) return;
     const checkpoint = checkpoints.find((item) => item.path === selectedCheckpoint);
     const label = checkpoint ? `${checkpoint.name} (${checkpoint.isSft ? 'SFT' : '预训练'}, step=${checkpoint.step})` : selectedCheckpoint;
-    if (!window.confirm(`确定删除音乐模型 checkpoint？\n\n${label}\n\n该操作会删除本地权重和元数据文件，无法在界面中恢复。`)) {
-      return;
-    }
+    setPendingDelete({ path: selectedCheckpoint, label });
+  };
+
+  const confirmDeleteCheckpoint = async () => {
+    if (!pendingDelete || isDeleting) return;
     setIsDeleting(true);
     setError('');
     try {
-      await deleteCheckpoint(selectedCheckpoint);
+      await deleteCheckpoint(pendingDelete.path);
       setIsLoaded(false);
+      setLoadedCheckpoint('');
       setRawOutput('');
       stopPlayback();
       setNotice('模型 checkpoint 已删除。');
+      setPendingDelete(null);
       refreshCheckpoints();
     } catch (err) {
       setError(err instanceof Error ? err.message : '删除模型失败');
@@ -563,61 +583,84 @@ export default function MusicPage() {
   }, [bpm, mood, musicKey, seed, selectedCheckpoint, selectedPreset, style]);
 
   return (
-    <div className="p-8 max-w-6xl mx-auto space-y-6">
+    <div className="px-5 py-6 lg:px-6 w-full space-y-6">
       <div className="flex items-start justify-between gap-4">
         <div>
           <div className="flex items-center gap-3 mb-2">
             <Music2 className="w-6 h-6 text-primary" />
-            <h1 className="text-2xl font-bold">音乐 Playground</h1>
+            <h1 className="text-2xl font-bold">音乐生成</h1>
+            {isLoaded && (
+              <span className="px-2 py-0.5 bg-success/20 text-success text-xs rounded-full">
+                已加载
+              </span>
+            )}
           </div>
-          <p className="text-sm text-text-muted">
+          <p className="text-text-muted">
             用音乐 checkpoint 生成和弦进行，并把结果解析成可读的和弦时间线。
           </p>
         </div>
-        <div className="flex items-center gap-2">
-          <select
-            value={selectedCheckpoint}
-            onChange={(event) => {
-              setSelectedCheckpoint(event.target.value);
-              setIsLoaded(false);
-            }}
-            className="min-w-64 bg-surface border border-border rounded-lg px-3 py-2 text-sm text-text"
-          >
-            {checkpoints.map((checkpoint) => (
-              <option key={checkpoint.path} value={checkpoint.path}>
-                {checkpoint.name} {checkpoint.dataDomain === 'music' ? '(音乐)' : ''}
-              </option>
-            ))}
-            {checkpoints.length === 0 && <option>暂无可用音乐模型</option>}
-          </select>
+      </div>
+
+      {!isLoaded && (
+        <div className="rounded-xl border border-border bg-surface-light/50 px-4 py-4">
+          <div className="flex items-center gap-3">
+            <select
+              value={selectedCheckpoint}
+              onChange={(event) => setSelectedCheckpoint(event.target.value)}
+              className="flex-1 bg-surface border border-border rounded-lg px-3 py-2 text-sm text-text"
+            >
+              {checkpoints.map((checkpoint) => (
+                <option key={checkpoint.path} value={checkpoint.path}>
+                  {checkpoint.name} ({checkpoint.isSft ? 'SFT' : '预训练'}, step={checkpoint.step})
+                </option>
+              ))}
+              {checkpoints.length === 0 && <option>暂无可用音乐模型</option>}
+            </select>
+            <button
+              onClick={refreshCheckpoints}
+              disabled={isLoading || isDeleting}
+              className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-surface border border-border text-text-muted text-sm font-medium hover:bg-surface-lighter hover:text-text disabled:opacity-50 transition-all"
+              title="刷新模型列表"
+            >
+              <RefreshCw className="w-4 h-4" />
+              刷新
+            </button>
+            <button
+              onClick={handleDeleteCheckpoint}
+              disabled={isLoading || isDeleting || !selectedCheckpoint}
+              className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-error/10 border border-error/20 text-error text-sm font-medium hover:bg-error/20 disabled:opacity-50 transition-all"
+              title="删除当前选中的本地 checkpoint"
+            >
+              {isDeleting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
+              删除
+            </button>
+            <button
+              onClick={handleLoad}
+              disabled={isLoading || isDeleting || !selectedCheckpoint}
+              className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-primary text-white text-sm font-medium hover:bg-primary-dark disabled:opacity-50 transition-all"
+            >
+              {isLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
+              加载模型
+            </button>
+          </div>
+        </div>
+      )}
+
+      {isLoaded && (
+        <div className="rounded-xl border border-border bg-surface-light/30 px-4 py-2 flex items-center justify-between">
+          <span className="text-xs text-text-muted">
+            当前模型: {checkpoints.find((item) => item.path === loadedCheckpoint)?.name || checkpoints.find((item) => item.path === selectedCheckpoint)?.name}
+          </span>
           <button
-            onClick={refreshCheckpoints}
-            disabled={isLoading || isDeleting}
-            className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-surface border border-border text-text-muted text-sm font-medium hover:bg-surface-lighter hover:text-text disabled:opacity-50"
-            title="刷新模型列表"
+            onClick={handleUnload}
+            disabled={isGenerating}
+            className="flex items-center gap-1 text-xs text-text-muted hover:text-error transition-colors disabled:opacity-50"
           >
-            <RefreshCw className="w-4 h-4" />
-            刷新
-          </button>
-          <button
-            onClick={handleDeleteCheckpoint}
-            disabled={isLoading || isDeleting || !selectedCheckpoint}
-            className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-error/10 border border-error/20 text-error text-sm font-medium hover:bg-error/20 disabled:opacity-50"
-            title="删除当前选中的本地 checkpoint"
-          >
-            {isDeleting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
-            删除
-          </button>
-          <button
-            onClick={handleLoad}
-            disabled={isLoading || isDeleting || !selectedCheckpoint}
-            className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-primary text-white text-sm font-medium hover:bg-primary-dark disabled:opacity-50"
-          >
-            {isLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
-            {isLoaded ? '已加载' : '加载模型'}
+            <Upload className="w-3 h-3" />
+            卸载
           </button>
         </div>
-      </div>
+      )}
 
       {error && (
         <div className="rounded-xl border border-error/20 bg-error/10 px-4 py-3 text-sm text-error">
@@ -764,6 +807,49 @@ export default function MusicPage() {
           {rawOutput || '—'}
         </pre>
       </section>
+      {pendingDelete && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4"
+          onClick={() => !isDeleting && setPendingDelete(null)}
+        >
+          <div
+            className="w-full max-w-md rounded-xl border border-border bg-surface-light p-5 shadow-xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-start gap-3">
+              <div className="mt-0.5 rounded-full bg-error/10 p-2 text-error">
+                <Trash2 className="w-5 h-5" />
+              </div>
+              <div>
+                <h2 className="text-base font-semibold text-text">确认删除音乐模型？</h2>
+                <p className="mt-2 text-sm text-text-muted">
+                  将删除本地 checkpoint，无法在界面中恢复。
+                </p>
+                <p className="mt-3 rounded-lg border border-border bg-surface px-3 py-2 text-xs text-text-muted">
+                  {pendingDelete.label}
+                </p>
+              </div>
+            </div>
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                onClick={() => setPendingDelete(null)}
+                disabled={isDeleting}
+                className="px-4 py-2 rounded-lg text-sm text-text-muted hover:text-text hover:bg-surface-lighter disabled:opacity-50"
+              >
+                取消
+              </button>
+              <button
+                onClick={confirmDeleteCheckpoint}
+                disabled={isDeleting}
+                className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-error text-white text-sm font-medium hover:bg-error/80 disabled:opacity-50"
+              >
+                {isDeleting && <Loader2 className="w-4 h-4 animate-spin" />}
+                确认删除
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -19,13 +19,14 @@ from nanochat_mlx.engine import Engine
 from nanochat_mlx.common import print0, get_base_dir, set_memory_limit
 
 
-def load_model(depth=12, step=None, source="base"):
+def load_model(depth=12, step=None, source="base", model_name=None):
     """Load a trained MLX model from checkpoint.
 
     Args:
         depth: model depth
         step: checkpoint step (None = latest)
         source: "base" for pretrained, "sft" for fine-tuned
+        model_name: optional checkpoint display name, used to disambiguate same-step runs
     """
     base_dir = get_base_dir()
     if source == "sft":
@@ -33,7 +34,7 @@ def load_model(depth=12, step=None, source="base"):
     else:
         ckpt_dir = os.path.join(base_dir, "mlx_checkpoints", f"d{depth}")
 
-    weights_path, meta_path = require_checkpoint(depth=depth, source=source, step=step)
+    weights_path, meta_path = require_checkpoint(depth=depth, source=source, step=step, model_name=model_name)
 
     # Load metadata
     import json

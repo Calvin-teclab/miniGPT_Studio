@@ -24,6 +24,7 @@ interface StatusResponse extends StatusDomain {
 }
 
 interface RawCheckpoint {
+  checkpoint_id?: string;
   data_domain?: string;
   depth?: number;
   step?: number;
@@ -111,8 +112,16 @@ export async function getCheckpoints(): Promise<Checkpoint[]> {
   const checkpoints = raw.map((cp) => {
     const fallbackName = `${cp.data_domain === 'music' ? 'music_' : ''}d${cp.depth}_${cp.source}_step${cp.step}`;
     const displayName = cp.display_name || cp.model_name || fallbackName;
+    const legacyDescriptor = [
+      cp.data_domain || 'general',
+      cp.depth || 0,
+      cp.step || 0,
+      cp.source || 'base',
+      encodeURIComponent(cp.model_name || ''),
+    ].join(':');
     return {
-      path: `${cp.data_domain || 'general'}:${cp.depth}:${cp.step}:${cp.source}`,
+      path: cp.checkpoint_id || legacyDescriptor,
+      checkpointId: cp.checkpoint_id,
       name: displayName,
       modelName: cp.model_name,
       displayName,
@@ -179,6 +188,14 @@ export async function stopProcess(): Promise<void> {
 
 // Chat - load model (backend expects {depth, step, source})
 export async function loadModel(checkpointDescriptor: string): Promise<{ status: string }> {
+  if (checkpointDescriptor.startsWith('cp_')) {
+    const res = await fetch(`${BASE}/chat/load`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ checkpoint_id: checkpointDescriptor }),
+    });
+    return parseJsonOrThrow<{ status: string }>(res);
+  }
   // Descriptor format: "data_domain:depth:step:source" (old "depth:step:source" is also supported)
   const parts = checkpointDescriptor.split(':');
   const hasDomain = Number.isNaN(parseInt(parts[0]));
@@ -187,11 +204,12 @@ export async function loadModel(checkpointDescriptor: string): Promise<{ status:
   const depth = parseInt(parts[offset]) || 4;
   const step = parts[offset + 1] ? parseInt(parts[offset + 1]) : undefined;
   const source = parts[offset + 2] || 'base';
+  const modelName = parts.length > offset + 3 ? decodeURIComponent(parts[offset + 3] || '') : undefined;
 
   const res = await fetch(`${BASE}/chat/load`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ data_domain: dataDomain, depth, step: step || null, source }),
+    body: JSON.stringify({ data_domain: dataDomain, depth, step: step || null, source, model_name: modelName ?? null }),
   });
   return parseJsonOrThrow<{ status: string }>(res);
 }
@@ -206,14 +224,18 @@ function parseCheckpointDescriptor(checkpointDescriptor: string) {
     depth: parseInt(parts[offset]) || 4,
     step: parts[offset + 1] ? parseInt(parts[offset + 1]) : 0,
     source: parts[offset + 2] || 'base',
+    model_name: parts.length > offset + 3 ? decodeURIComponent(parts[offset + 3] || '') : null,
   };
 }
 
 export async function deleteCheckpoint(checkpointDescriptor: string): Promise<{ status: string; deleted: string[] }> {
+  const body = checkpointDescriptor.startsWith('cp_')
+    ? { checkpoint_id: checkpointDescriptor }
+    : parseCheckpointDescriptor(checkpointDescriptor);
   const res = await fetch(`${BASE}/checkpoints/delete`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(parseCheckpointDescriptor(checkpointDescriptor)),
+    body: JSON.stringify(body),
   });
   return parseJsonOrThrow<{ status: string; deleted: string[] }>(res);
 }

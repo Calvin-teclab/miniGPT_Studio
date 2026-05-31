@@ -16,24 +16,24 @@ const navItems = [
   { to: '/training', icon: Activity, label: '训练监控', description: '实时训练过程' },
   { to: '/eval', icon: FlaskConical, label: '模型评测', description: '基准与对比评测' },
   { to: '/chat', icon: MessageCircle, label: '模型对话', description: '与模型交互' },
-  { to: '/music', icon: Music2, label: '音乐生成', description: '和弦 Playground' },
+  { to: '/music', icon: Music2, label: '音乐生成', description: '和弦生成' },
 ];
 
 export default function Layout() {
   return (
     <div className="flex h-screen overflow-hidden">
       {/* Sidebar */}
-      <aside className="w-64 bg-surface-light border-r border-border flex flex-col shrink-0">
-        <div className="p-5 border-b border-border">
-          <div className="flex items-center gap-2.5">
-            <Brain className="w-7 h-7 text-primary" />
+      <aside className="w-56 bg-surface-light border-r border-border flex flex-col shrink-0">
+        <div className="p-4 border-b border-border">
+          <div className="flex items-center gap-2">
+            <Brain className="w-6 h-6 text-primary" />
             <div>
               <h1 className="text-base font-bold text-text">miniGPT Studio</h1>
               <p className="text-xs text-text-muted">AI Training Lab</p>
             </div>
           </div>
         </div>
-        <nav className="flex-1 p-3 space-y-1 overflow-y-auto">
+        <nav className="flex-1 p-2.5 space-y-1 overflow-y-auto">
           {navItems.map((item) => (
             <NavLink
               key={item.to}
@@ -41,7 +41,7 @@ export default function Layout() {
               end={item.to === '/'}
               className={({ isActive }) =>
                 cn(
-                  'flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all text-sm',
+                  'flex items-center gap-2.5 px-2.5 py-2 rounded-lg transition-all text-sm',
                   isActive
                     ? 'bg-primary/15 text-primary-light font-medium'
                     : 'text-text-muted hover:bg-surface-lighter hover:text-text'
@@ -56,9 +56,9 @@ export default function Layout() {
             </NavLink>
           ))}
         </nav>
-        <div className="p-4 border-t border-border text-xs text-text-muted">
+        <div className="p-3.5 border-t border-border text-xs text-text-muted">
           <div>Apple Silicon MLX</div>
-          <div className="mt-0.5 opacity-60">本地训练 · 隐私安全</div>
+          <div className="mt-0.5 opacity-60">本地训练 · 作者：xuc</div>
         </div>
       </aside>
 

@@ -151,7 +151,7 @@ function downloadTextFile(filename: string, content: string, type = 'text/markdo
 function getSavedModelName() {
   try {
     const saved = JSON.parse(localStorage.getItem('nanochat_config') || '{}') as Record<string, unknown>;
-    return typeof saved.model_name === 'string' ? saved.model_name : '';
+    return typeof saved.model_name === 'string' ? saved.model_name.trim() : '';
   } catch {
     return '';
   }
@@ -329,6 +329,18 @@ export default function TrainingPage() {
   const logsEndRef = useRef<HTMLDivElement>(null);
   const autoStartedRef = useRef(false);
   const autoStartTimerRef = useRef<number | null>(null);
+  const startTrainingRef = useRef<((stageOverride?: 'train' | 'sft') => void) | null>(null);
+
+  useEffect(() => {
+    if (isRunning) return;
+    if (autoStart && stage !== autoStart) {
+      setStage(autoStart);
+    }
+    const savedModelName = getSavedModelName();
+    if (savedModelName && modelName !== savedModelName) {
+      setModelName(savedModelName);
+    }
+  }, [autoStart, isRunning, modelName, setModelName, setStage, stage]);
 
   useEffect(() => {
     logsEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -480,7 +492,8 @@ export default function TrainingPage() {
       // Load saved config
       const savedConfig = localStorage.getItem('nanochat_config');
       const config = savedConfig ? JSON.parse(savedConfig) : {};
-      const resolvedModelName = modelName.trim() || createDefaultModelName(s, String(config.data_domain || DEFAULT_TRAINING_PARAMS.data_domain));
+      const savedModelName = typeof config.model_name === 'string' ? config.model_name.trim() : '';
+      const resolvedModelName = savedModelName || modelName.trim() || createDefaultModelName(s, String(config.data_domain || DEFAULT_TRAINING_PARAMS.data_domain));
       if (resolvedModelName !== modelName) {
         setModelName(resolvedModelName);
       }
@@ -657,14 +670,19 @@ export default function TrainingPage() {
       stage,
     ]
   );
+  startTrainingRef.current = startTraining;
 
   // Auto-start once when navigated from the pipeline page.
   useEffect(() => {
     if (!autoStart || autoStartedRef.current) return;
+    autoStartedRef.current = true;
+    updateTrainingMonitor(() => ({
+      ...createEmptyTrainingSnapshot(autoStart),
+      logs: ['已进入新的训练任务，正在准备启动本轮训练...'],
+    }));
     autoStartTimerRef.current = window.setTimeout(() => {
-      autoStartedRef.current = true;
       autoStartTimerRef.current = null;
-      startTraining(autoStart);
+      startTrainingRef.current?.(autoStart);
     }, 150);
     return () => {
       if (autoStartTimerRef.current !== null) {
@@ -672,7 +690,7 @@ export default function TrainingPage() {
         autoStartTimerRef.current = null;
       }
     };
-  }, [autoStart, startTraining]);
+  }, [autoStart]);
 
   useEffect(() => {
     return () => {
@@ -745,7 +763,7 @@ export default function TrainingPage() {
   const progress = metrics ? (metrics.step / metrics.totalSteps) * 100 : 0;
 
   return (
-    <div className="p-8 max-w-7xl mx-auto">
+    <div className="px-5 py-6 lg:px-6 w-full">
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <div>

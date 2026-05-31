@@ -202,8 +202,8 @@ export default function ConfigPage() {
   const groups = ['model', 'training', 'data', 'optimizer'] as const;
 
   return (
-    <div className="p-8 max-w-4xl mx-auto">
-      <div className="flex items-center justify-between mb-8">
+    <div className="px-5 py-6 lg:px-6 w-full">
+      <div className="flex items-center justify-between mb-5">
         <div>
           <div className="flex items-center gap-3 mb-2">
             <Settings className="w-6 h-6 text-primary" />
@@ -241,35 +241,35 @@ export default function ConfigPage() {
         </div>
       </div>
 
-      <div className="space-y-8">
+      <div className="space-y-5">
         {groups.map((group) => {
           const info = groupInfo[group];
           const params = paramConfigs.filter((p) => p.group === group);
 
           return (
             <div key={group} className="bg-surface-light border border-border rounded-xl overflow-hidden">
-              <div className="px-5 py-4 border-b border-border flex items-center gap-3">
+              <div className="px-4 py-3 border-b border-border flex items-center gap-2.5">
                 <info.icon className="w-4.5 h-4.5 text-primary" />
                 <div>
                   <h2 className="text-sm font-semibold">{info.label}</h2>
                   <p className="text-xs text-text-muted">{info.description}</p>
                 </div>
               </div>
-              <div className="p-5 space-y-5">
+              <div className="grid grid-cols-1 xl:grid-cols-2 gap-x-6 gap-y-3 p-4">
                 {params.map((param) => (
-                  <div key={param.key} className="flex items-start gap-4">
-                    <div className="w-48 shrink-0 pt-2">
+                  <div key={param.key} className="flex items-center gap-3 min-w-0">
+                    <div className="w-40 shrink-0">
                       <div className="flex items-center gap-1.5">
-                        <label className="text-sm font-medium">{param.label}</label>
+                        <label className="truncate text-sm font-medium">{param.label}</label>
                         <ParamTooltip content={param.description} />
                       </div>
                     </div>
-                    <div className="flex-1">
+                    <div className="min-w-0 flex-1">
                       {param.type === 'select' && (
                         <select
                           value={String(values[param.key] ?? '')}
                           onChange={(e) => updateValue(param.key, e.target.value)}
-                          className="w-full bg-surface border border-border rounded-lg px-3 py-2 text-sm text-text focus:outline-none focus:border-primary transition-colors"
+                          className="w-full bg-surface border border-border rounded-lg px-3 py-1.5 text-sm text-text focus:outline-none focus:border-primary transition-colors"
                         >
                           {param.options?.map((opt) => (
                             <option key={opt.value} value={opt.value}>
@@ -286,7 +286,7 @@ export default function ConfigPage() {
                           min={param.min}
                           max={param.max}
                           step={param.step}
-                          className="w-full bg-surface border border-border rounded-lg px-3 py-2 text-sm text-text focus:outline-none focus:border-primary transition-colors"
+                          className="w-full bg-surface border border-border rounded-lg px-3 py-1.5 text-sm text-text focus:outline-none focus:border-primary transition-colors"
                         />
                       )}
                       {param.type === 'text' && (
@@ -294,7 +294,7 @@ export default function ConfigPage() {
                           type="text"
                           value={String(values[param.key] ?? '')}
                           onChange={(e) => updateValue(param.key, e.target.value)}
-                          className="w-full bg-surface border border-border rounded-lg px-3 py-2 text-sm text-text focus:outline-none focus:border-primary transition-colors"
+                          className="w-full bg-surface border border-border rounded-lg px-3 py-1.5 text-sm text-text focus:outline-none focus:border-primary transition-colors"
                           placeholder="/Users/you/data/chords.jsonl"
                         />
                       )}

@@ -84,6 +84,11 @@ export default function EvalPage() {
 
   const esRef = useRef<EventSource | null>(null);
 
+  const closeBenchmarkStream = () => {
+    esRef.current?.close();
+    esRef.current = null;
+  };
+
   const exportReport = async (filename: string, report: string) => {
     setExportMessage('');
     try {
@@ -111,6 +116,7 @@ export default function EvalPage() {
         if (cps.length > 0) setSelectedCheckpoint(cps[0].path);
       })
       .catch(() => {});
+    return () => closeBenchmarkStream();
   }, []);
 
   const toggleBenchmark = (id: string) => {
@@ -121,6 +127,7 @@ export default function EvalPage() {
 
   const runBenchmarks = () => {
     if (!selectedCheckpoint || selectedBenchmarks.length === 0) return;
+    closeBenchmarkStream();
     setIsRunning(true);
     setBenchmarkResults([]);
     setLogs([]);
@@ -148,11 +155,11 @@ export default function EvalPage() {
           setBenchmarkError(text);
           setLogs((prev) => [...prev, `错误: ${text}`]);
           setIsRunning(false);
-          es.close();
+          closeBenchmarkStream();
         } else if (data.type === 'done') {
           streamFinished = true;
           setIsRunning(false);
-          es.close();
+          closeBenchmarkStream();
         }
       } catch {
         setLogs((prev) => [...prev, e.data]);
@@ -167,7 +174,7 @@ export default function EvalPage() {
       setBenchmarkError(text);
       setLogs((prev) => [...prev, `错误: ${text}`]);
       setIsRunning(false);
-      es.close();
+      closeBenchmarkStream();
     };
   };
 
@@ -272,7 +279,7 @@ export default function EvalPage() {
   };
 
   return (
-    <div className="p-8 max-w-6xl mx-auto">
+    <div className="px-5 py-6 lg:px-6 w-full">
       <div className="mb-6">
         <div className="flex items-center gap-3 mb-2">
           <FlaskConical className="w-6 h-6 text-primary" />

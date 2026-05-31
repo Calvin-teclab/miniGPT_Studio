@@ -10,6 +10,7 @@ import json
 import time
 import math
 import urllib.request
+import re
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -27,6 +28,11 @@ from nanochat_mlx.train import (
 from nanochat_mlx.sft_dataloader import sft_dataloader_bos_bestfit
 
 IDENTITY_URL = "https://karpathy-public.s3.us-west-2.amazonaws.com/identity_conversations.jsonl"
+
+
+def _safe_checkpoint_suffix(model_name):
+    cleaned = re.sub(r"[^a-zA-Z0-9_.-]+", "_", (model_name or "").strip()).strip("._")
+    return cleaned[:80]
 
 
 def _ensure_identity_conversations(filepath):
@@ -225,16 +231,19 @@ def sft(args):
             should_save = True
 
         if should_save:
-            weights_save_path = os.path.join(sft_ckpt_dir, f"step_{step:06d}.safetensors")
+            model_name = getattr(args, "model_name", "") or meta.get("model_name", "")
+            checkpoint_suffix = _safe_checkpoint_suffix(model_name)
+            stem = f"step_{step:06d}{'__' + checkpoint_suffix if checkpoint_suffix else ''}"
+            weights_save_path = os.path.join(sft_ckpt_dir, f"{stem}.safetensors")
             model.save_weights(weights_save_path)
 
-            opt_save_path = os.path.join(sft_ckpt_dir, f"step_{step:06d}_optim.safetensors")
+            opt_save_path = os.path.join(sft_ckpt_dir, f"{stem}_optim.safetensors")
             _save_optimizer_state(optimizer, opt_save_path)
 
             sft_meta = {
                 "step": step,
                 "depth": args.depth,
-                "model_name": getattr(args, "model_name", "") or meta.get("model_name", ""),
+                "model_name": model_name,
                 "n_embd": config.n_embd,
                 "n_head": config.n_head,
                 "n_kv_head": config.n_kv_head,
@@ -244,7 +253,7 @@ def sft(args):
                 "source": "sft",
                 "base_checkpoint": weights_path,
             }
-            sft_meta_path = os.path.join(sft_ckpt_dir, f"step_{step:06d}_meta.json")
+            sft_meta_path = os.path.join(sft_ckpt_dir, f"{stem}_meta.json")
             with open(sft_meta_path, "w") as f:
                 json.dump(sft_meta, f, indent=2)
             print0(f"Saved SFT checkpoint to {sft_ckpt_dir}")

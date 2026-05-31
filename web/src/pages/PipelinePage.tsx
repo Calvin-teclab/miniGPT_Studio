@@ -100,16 +100,36 @@ const defaultDataPrepConfig: DataPrepConfig = {
   n_shards: 4,
 };
 
-const loadDataPrepConfig = (): DataPrepConfig => {
+function createDefaultFlowModelName(dataDomain: DataDomain = 'general') {
+  const now = new Date();
+  const stamp = [
+    now.getFullYear(),
+    String(now.getMonth() + 1).padStart(2, '0'),
+    String(now.getDate()).padStart(2, '0'),
+    String(now.getHours()).padStart(2, '0'),
+    String(now.getMinutes()).padStart(2, '0'),
+    String(now.getSeconds()).padStart(2, '0'),
+  ].join('');
+  return `${dataDomain}-train-${stamp}`;
+}
+
+const loadDataPrepConfig = ({ freshModelName = false } = {}): DataPrepConfig => {
   try {
     const saved = JSON.parse(localStorage.getItem('nanochat_config') || '{}');
     const merged = { ...defaultDataPrepConfig, ...saved };
     if (merged.music_dataset === 'starter_chords') {
       merged.music_dataset = 'music_starter_chords_raw.jsonl';
     }
+    if (freshModelName) {
+      const dataDomain: DataDomain = merged.data_domain === 'music' ? 'music' : 'general';
+      merged.model_name = createDefaultFlowModelName(dataDomain);
+    }
     return merged;
   } catch {
-    return defaultDataPrepConfig;
+    return {
+      ...defaultDataPrepConfig,
+      model_name: freshModelName ? createDefaultFlowModelName(defaultDataPrepConfig.data_domain) : '',
+    };
   }
 };
 
@@ -325,7 +345,9 @@ export default function PipelinePage() {
   const [activeStep, setActiveStep] = useState(0);
   const [logs, setLogs] = useState<string[]>([]);
   const [cachedStepIds, setCachedStepIds] = useState<Set<string>>(new Set());
-  const [dataPrepConfig, setDataPrepConfig] = useState<DataPrepConfig>(loadDataPrepConfig);
+  const [dataPrepConfig, setDataPrepConfig] = useState<DataPrepConfig>(() =>
+    loadDataPrepConfig({ freshModelName: true })
+  );
   const [uploadFile, setUploadFile] = useState<File | null>(null);
   const [sampleDatasets, setSampleDatasets] = useState<SampleDataset[]>([]);
   const [editorContent, setEditorContent] = useState('');
@@ -335,11 +357,12 @@ export default function PipelinePage() {
   const runningStepRef = useRef(false);
   const logsEndRef = useRef<HTMLDivElement>(null);
   const navigate = useNavigate();
+  const hasRunningStep = steps.some((item) => item.status === 'running');
 
   const updateDataPrepConfig = useCallback((patch: Partial<DataPrepConfig>) => {
     setDataPrepConfig((prev) => {
       const next = { ...prev, ...patch };
-      const saved = JSON.parse(localStorage.getItem('nanochat_config') || '{}');
+      const saved = loadDataPrepConfig();
       localStorage.setItem('nanochat_config', JSON.stringify({ ...saved, ...next }));
       return next;
     });
@@ -442,6 +465,14 @@ export default function PipelinePage() {
     async (index: number) => {
       const step = steps[index];
 
+      if (runningStepRef.current || steps.some((item) => item.status === 'running')) {
+        setLogs((prev) => [
+          ...prev,
+          '已有流程步骤正在运行，请等待它完成后再继续下一步。',
+        ]);
+        return;
+      }
+
       if (step.stage === 'chat') {
         navigate('/chat');
         return;
@@ -453,19 +484,25 @@ export default function PipelinePage() {
         return;
       }
 
+      runningStepRef.current = true;
+      setActiveStep(index);
       setSteps((prev) =>
-        prev.map((s, i) => (i === index ? { ...s, status: 'running' } : s))
+        prev.map((s, i) => {
+          if (i === index) return { ...s, status: 'running' };
+          if (i > index) return { ...s, status: 'pending', progress: undefined };
+          return s;
+        })
       );
       setCachedStepIds((prev) => {
         const next = new Set(prev);
-        next.delete(step.id);
+        steps.slice(index).forEach((item) => next.delete(item.id));
         return next;
       });
       setLogs([]);
 
       const params = new URLSearchParams();
-      const savedConfig = localStorage.getItem('nanochat_config');
-      const config = { ...dataPrepConfig, ...(savedConfig ? JSON.parse(savedConfig) : {}) };
+      const config = { ...loadDataPrepConfig(), ...dataPrepConfig };
+      localStorage.setItem('nanochat_config', JSON.stringify(config));
       if (config.data_domain) {
         params.set('data_domain', String(config.data_domain));
       }
@@ -508,6 +545,7 @@ export default function PipelinePage() {
             prev.map((s, i) => (i === index ? { ...s, status: 'error' } : s))
           );
           setLogs((prev) => [...prev, `错误: ${message}`]);
+          runningStepRef.current = false;
           return;
         }
       }
@@ -516,14 +554,6 @@ export default function PipelinePage() {
       const url = `/api/run/${step.stage}${query ? `?${query}` : ''}`;
       let heartbeatTimer: number | null = null;
       let stepFailed = false;
-      if (runningStepRef.current) {
-        setLogs((prev) => [
-          ...prev,
-          '已有流程步骤正在运行，请等待它完成，或刷新页面后再重新开始。',
-        ]);
-        return;
-      }
-      runningStepRef.current = true;
 
       const applyDone = () => {
         setSteps((prev) =>
@@ -642,12 +672,6 @@ export default function PipelinePage() {
     setActiveStep(index + 1);
   }, []);
 
-  const handleUseCachedStep = useCallback((index: number) => {
-    if (index < steps.length - 1) {
-      setActiveStep(index + 1);
-    }
-  }, [steps.length]);
-
   const getRerunLabel = (stage: string) => {
     if (stage === 'train') return '重新训练';
     if (stage === 'sft') return '重新微调';
@@ -658,7 +682,7 @@ export default function PipelinePage() {
 
   const dataPrepPanel = (
     <div className="border border-border rounded-xl bg-surface/70 overflow-hidden">
-      <div className="px-4 py-3 border-b border-border flex items-center gap-2">
+      <div className="px-3 py-2 border-b border-border flex items-center gap-2">
         <Database className="w-4 h-4 text-primary" />
         <div>
           <div className="text-sm font-medium">数据准备选项</div>
@@ -666,14 +690,14 @@ export default function PipelinePage() {
         </div>
       </div>
 
-      <div className="p-4 grid grid-cols-1 md:grid-cols-2 gap-4">
-        <label className="space-y-1.5 md:col-span-2">
+      <div className="p-3 grid grid-cols-1 xl:grid-cols-2 gap-3">
+        <label className="space-y-1 xl:col-span-2">
           <span className="text-xs font-medium text-text-muted">模型名称</span>
           <input
             type="text"
             value={dataPrepConfig.model_name}
             onChange={(e) => updateDataPrepConfig({ model_name: e.target.value })}
-            className="w-full bg-surface border border-border rounded-lg px-3 py-2 text-sm text-text focus:outline-none focus:border-primary"
+            className="w-full bg-surface border border-border rounded-lg px-3 py-1.5 text-sm text-text focus:outline-none focus:border-primary"
             placeholder="例如：客服助手-v1、和弦生成实验-0501"
             maxLength={80}
           />
@@ -682,24 +706,24 @@ export default function PipelinePage() {
           </p>
         </label>
 
-        <label className="space-y-1.5">
+        <label className="space-y-1">
           <span className="text-xs font-medium text-text-muted">数据类型</span>
           <select
             value={dataPrepConfig.data_domain}
             onChange={(e) => updateDataPrepConfig({ data_domain: e.target.value as DataDomain })}
-            className="w-full bg-surface border border-border rounded-lg px-3 py-2 text-sm text-text focus:outline-none focus:border-primary"
+            className="w-full bg-surface border border-border rounded-lg px-3 py-1.5 text-sm text-text focus:outline-none focus:border-primary"
           >
             <option value="general">文字 / 通用文本</option>
             <option value="music">音乐 / 和弦数据</option>
           </select>
         </label>
 
-        <label className="space-y-1.5">
+        <label className="space-y-1">
           <span className="text-xs font-medium text-text-muted">数据来源</span>
           <select
             value={dataPrepConfig.data_source}
             onChange={(e) => updateDataPrepConfig({ data_source: e.target.value as DataSource })}
-            className="w-full bg-surface border border-border rounded-lg px-3 py-2 text-sm text-text focus:outline-none focus:border-primary"
+            className="w-full bg-surface border border-border rounded-lg px-3 py-1.5 text-sm text-text focus:outline-none focus:border-primary"
           >
             <option value="builtin">选择内置/推荐数据集</option>
             <option value="custom_path">填写本地数据集路径</option>
@@ -708,12 +732,12 @@ export default function PipelinePage() {
         </label>
 
         {dataPrepConfig.data_source === 'builtin' && dataPrepConfig.data_domain === 'general' && (
-          <label className="space-y-1.5">
+          <label className="space-y-1">
             <span className="text-xs font-medium text-text-muted">可选文字数据集</span>
             <select
               value={dataPrepConfig.text_dataset}
               onChange={(e) => updateDataPrepConfig({ text_dataset: e.target.value })}
-              className="w-full bg-surface border border-border rounded-lg px-3 py-2 text-sm text-text focus:outline-none focus:border-primary"
+              className="w-full bg-surface border border-border rounded-lg px-3 py-1.5 text-sm text-text focus:outline-none focus:border-primary"
             >
               <option value="fineweb_edu">FineWeb-Edu 教育文本（在线下载）</option>
               {visibleSampleDatasets.map((dataset) => (
@@ -729,12 +753,12 @@ export default function PipelinePage() {
         )}
 
         {dataPrepConfig.data_source === 'builtin' && dataPrepConfig.data_domain === 'music' && (
-          <label className="space-y-1.5">
+          <label className="space-y-1">
             <span className="text-xs font-medium text-text-muted">可选音乐数据集</span>
             <select
               value={dataPrepConfig.music_dataset}
               onChange={(e) => updateDataPrepConfig({ music_dataset: e.target.value })}
-              className="w-full bg-surface border border-border rounded-lg px-3 py-2 text-sm text-text focus:outline-none focus:border-primary"
+              className="w-full bg-surface border border-border rounded-lg px-3 py-1.5 text-sm text-text focus:outline-none focus:border-primary"
             >
               {visibleSampleDatasets.map((dataset) => (
                 <option key={dataset.id} value={dataset.id}>
@@ -749,7 +773,7 @@ export default function PipelinePage() {
         )}
 
         {dataPrepConfig.data_source === 'builtin' && selectedSample && (
-          <div className="md:col-span-2 rounded-xl border border-border bg-surface overflow-hidden">
+          <div className="xl:col-span-2 rounded-xl border border-border bg-surface overflow-hidden">
             <div className="px-3 py-2 border-b border-border flex items-center justify-between gap-3">
               <div className="min-w-0">
                 <div className="text-xs font-medium">编辑当前数据集：{selectedSample.label}</div>
@@ -780,7 +804,7 @@ export default function PipelinePage() {
                 value={editorContent}
                 onChange={(e) => setEditorContent(e.target.value)}
                 spellCheck={false}
-                className="w-full min-h-48 bg-surface p-3 font-mono text-xs text-text focus:outline-none"
+                className="w-full min-h-32 bg-surface p-3 font-mono text-xs text-text focus:outline-none"
                 placeholder="这里会显示可编辑的原始数据内容"
               />
             )}
@@ -793,7 +817,7 @@ export default function PipelinePage() {
         )}
 
         {dataPrepConfig.data_source === 'custom_path' && (
-          <label className="space-y-1.5 md:col-span-2">
+          <label className="space-y-1 xl:col-span-2">
             <span className="text-xs font-medium text-text-muted">本地数据集路径</span>
             <input
               type="text"
@@ -806,7 +830,7 @@ export default function PipelinePage() {
                     : { custom_data_path: value }
                 );
               }}
-              className="w-full bg-surface border border-border rounded-lg px-3 py-2 text-sm text-text focus:outline-none focus:border-primary"
+              className="w-full bg-surface border border-border rounded-lg px-3 py-1.5 text-sm text-text focus:outline-none focus:border-primary"
               placeholder="/Users/you/data/chords.jsonl 或 /Users/you/data/text.txt"
             />
             <p className="text-[11px] text-text-muted">支持 .jsonl、.csv、.txt、.md；后端会转换为训练 parquet 分片。</p>
@@ -814,9 +838,9 @@ export default function PipelinePage() {
         )}
 
         {dataPrepConfig.data_source === 'upload' && (
-          <label className="space-y-1.5 md:col-span-2">
+          <label className="space-y-1 xl:col-span-2">
             <span className="text-xs font-medium text-text-muted">上传自定义数据集</span>
-            <div className="flex items-center gap-3 rounded-lg border border-dashed border-border bg-surface px-3 py-3">
+            <div className="flex items-center gap-3 rounded-lg border border-dashed border-border bg-surface px-3 py-2">
               <Upload className="w-4 h-4 text-primary" />
               <input
                 type="file"
@@ -831,12 +855,12 @@ export default function PipelinePage() {
           </label>
         )}
 
-        <details className="md:col-span-2 rounded-xl border border-border bg-surface px-3 py-2">
+        <details className="xl:col-span-2 rounded-xl border border-border bg-surface px-3 py-2">
           <summary className="cursor-pointer text-xs font-medium text-text-muted hover:text-text">
             高级设置：分片、Tokenizer 与词表
           </summary>
-          <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-4">
-            <label className="space-y-1.5">
+          <div className="mt-3 grid grid-cols-1 xl:grid-cols-2 gap-3">
+            <label className="space-y-1">
               <span className="text-xs font-medium text-text-muted">数据分片数</span>
               <input
                 type="number"
@@ -844,12 +868,12 @@ export default function PipelinePage() {
                 max={32}
                 value={dataPrepConfig.n_shards}
                 onChange={(e) => updateDataPrepConfig({ n_shards: Number(e.target.value) })}
-                className="w-full bg-surface border border-border rounded-lg px-3 py-2 text-sm text-text focus:outline-none focus:border-primary"
+                className="w-full bg-surface border border-border rounded-lg px-3 py-1.5 text-sm text-text focus:outline-none focus:border-primary"
               />
               <p className="text-[11px] text-text-muted">主要用于 FineWeb-Edu 下载；自定义数据会自动切分训练/验证 shard。</p>
             </label>
 
-            <div className="space-y-1.5">
+            <div className="space-y-1">
               <span className="text-xs font-medium text-text-muted flex items-center gap-1.5">
                 <Scissors className="w-3.5 h-3.5" />
                 Token 拆分方式
@@ -857,7 +881,7 @@ export default function PipelinePage() {
               <select
                 value={dataPrepConfig.tokenizer_method}
                 onChange={(e) => updateDataPrepConfig({ tokenizer_method: e.target.value })}
-                className="w-full bg-surface border border-border rounded-lg px-3 py-2 text-sm text-text focus:outline-none focus:border-primary"
+                className="w-full bg-surface border border-border rounded-lg px-3 py-1.5 text-sm text-text focus:outline-none focus:border-primary"
               >
                 <option value="bpe">BPE 字节对编码（当前可训练）</option>
                 <option value="byte" disabled>Byte-level 字节级（展示中，暂未启用）</option>
@@ -866,7 +890,7 @@ export default function PipelinePage() {
               <p className="text-[11px] text-text-muted">BPE 会把高频字符片段合并成 token，兼顾中文、英文、符号与和弦记号。</p>
             </div>
 
-            <label className="space-y-1.5">
+            <label className="space-y-1">
               <span className="text-xs font-medium text-text-muted">词表大小</span>
               <input
                 type="number"
@@ -875,12 +899,12 @@ export default function PipelinePage() {
                 step={1024}
                 value={dataPrepConfig.vocab_size}
                 onChange={(e) => updateDataPrepConfig({ vocab_size: Number(e.target.value) })}
-                className="w-full bg-surface border border-border rounded-lg px-3 py-2 text-sm text-text focus:outline-none focus:border-primary"
+                className="w-full bg-surface border border-border rounded-lg px-3 py-1.5 text-sm text-text focus:outline-none focus:border-primary"
               />
               <p className="text-[11px] text-text-muted">越大表达更细，但小数据集容易浪费；和弦小数据可适当调低。</p>
             </label>
 
-            <label className="space-y-1.5">
+            <label className="space-y-1">
               <span className="text-xs font-medium text-text-muted">单文档最大字符数</span>
               <input
                 type="number"
@@ -889,7 +913,7 @@ export default function PipelinePage() {
                 step={512}
                 value={dataPrepConfig.doc_cap}
                 onChange={(e) => updateDataPrepConfig({ doc_cap: Number(e.target.value) })}
-                className="w-full bg-surface border border-border rounded-lg px-3 py-2 text-sm text-text focus:outline-none focus:border-primary"
+                className="w-full bg-surface border border-border rounded-lg px-3 py-1.5 text-sm text-text focus:outline-none focus:border-primary"
               />
               <p className="text-[11px] text-text-muted">训练 tokenizer 前会截断超长文档，避免单篇文本主导分词规则。</p>
             </label>
@@ -900,9 +924,9 @@ export default function PipelinePage() {
   );
 
   return (
-    <div className="p-8 max-w-5xl mx-auto">
+    <div className="px-5 py-6 lg:px-6 w-full">
       {/* Header */}
-      <div className="mb-8">
+      <div className="mb-5">
         <div className="flex items-center gap-3 mb-2">
           <Sparkles className="w-6 h-6 text-primary" />
           <h1 className="text-2xl font-bold">AI 模型训练流程</h1>
@@ -913,7 +937,7 @@ export default function PipelinePage() {
       </div>
 
       {/* Info banner */}
-      <div className="mb-6 p-4 bg-info/10 border border-info/20 rounded-xl flex items-start gap-3">
+      <div className="mb-4 p-3 bg-info/10 border border-info/20 rounded-xl flex items-start gap-3">
         <BookOpen className="w-5 h-5 text-info shrink-0 mt-0.5" />
         <div className="text-sm">
           <p className="font-medium text-info">新手指南</p>
@@ -926,7 +950,7 @@ export default function PipelinePage() {
       </div>
 
       {/* Steps */}
-      <div className="space-y-4">
+      <div className="space-y-3">
         {steps.map((step, index) => (
           <StepCard
             key={step.id}
@@ -939,15 +963,17 @@ export default function PipelinePage() {
             stepNumber={index + 1}
             isActive={index === activeStep}
             onStart={() => startStep(index)}
-            onUseCache={() => handleUseCachedStep(index)}
-            onSkip={index < 4 ? () => skipStep(index) : undefined}
+            onSkip={step.stage === 'sft' ? () => skipStep(index) : undefined}
             detectedFromCache={cachedStepIds.has(step.id)}
             rerunLabel={getRerunLabel(step.stage)}
             extra={step.id === 'data' ? dataPrepPanel : undefined}
             disabled={
-              index > 0 &&
-              steps[index - 1].status !== 'completed' &&
-              steps[index - 1].status !== 'skipped'
+              (hasRunningStep && step.status !== 'running') ||
+              (
+                index > 0 &&
+                steps[index - 1].status !== 'completed' &&
+                steps[index - 1].status !== 'skipped'
+              )
             }
           />
         ))}
@@ -955,7 +981,7 @@ export default function PipelinePage() {
 
       {/* Log output */}
       {logs.length > 0 && (
-        <div className="mt-6 bg-surface-light border border-border rounded-xl overflow-hidden">
+        <div className="mt-4 bg-surface-light border border-border rounded-xl overflow-hidden">
           <div className="px-4 py-2.5 border-b border-border text-xs font-medium text-text-muted">
             运行日志
           </div>

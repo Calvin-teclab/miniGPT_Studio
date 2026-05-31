@@ -9,6 +9,7 @@ import os
 import json
 import time
 import math
+import re
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -21,6 +22,21 @@ from nanochat_mlx.optim import (
     MultiOptimizer, OptimizerConfig, setup_optimizer,
     get_lr_multiplier, get_muon_momentum, get_weight_decay,
 )
+from nanochat_mlx.preflight import require_checkpoint
+
+
+def _safe_checkpoint_suffix(model_name):
+    cleaned = re.sub(r"[^a-zA-Z0-9_.-]+", "_", (model_name or "").strip()).strip("._")
+    return cleaned[:80]
+
+
+def _checkpoint_file_matches_suffix(filename, checkpoint_suffix):
+    if not filename.startswith("step_") or not filename.endswith((".safetensors", "_meta.json")):
+        return False
+    stem = filename.replace("_optim.safetensors", "").replace(".safetensors", "").replace("_meta.json", "")
+    if checkpoint_suffix:
+        return stem.endswith(f"__{checkpoint_suffix}")
+    return "__" not in stem
 
 
 def build_model(depth, vocab_size, aspect_ratio=64, head_dim=128, max_seq_len=2048, window_pattern="SSSL"):
@@ -211,8 +227,13 @@ def train(args):
     loop_state = None
 
     if resuming:
-        meta_path = os.path.join(ckpt_dir, f"step_{resume_step:06d}_meta.json")
-        weights_path = os.path.join(ckpt_dir, f"step_{resume_step:06d}.safetensors")
+        resume_model_name = getattr(args, "model_name", "") or None
+        weights_path, meta_path = require_checkpoint(
+            depth=args.depth,
+            source="base",
+            step=resume_step,
+            model_name=resume_model_name,
+        )
         assert os.path.exists(meta_path), f"Resume meta not found: {meta_path}"
         assert os.path.exists(weights_path), f"Resume weights not found: {weights_path}"
 
@@ -247,7 +268,7 @@ def train(args):
 
         # Resume optimizer state
         if resuming:
-            opt_path = os.path.join(ckpt_dir, f"step_{resume_step:06d}_optim.safetensors")
+            opt_path = weights_path.replace(".safetensors", "_optim.safetensors")
             if os.path.exists(opt_path):
                 _load_optimizer_state(optimizer, opt_path)
                 print0("Loaded optimizer state")
@@ -352,26 +373,30 @@ def train(args):
             should_save = True
 
         if should_save:
+            model_name = getattr(args, "model_name", "")
+            checkpoint_suffix = _safe_checkpoint_suffix(model_name)
+            stem = f"step_{step:06d}{'__' + checkpoint_suffix if checkpoint_suffix else ''}"
+
             # Remove previous checkpoint to save disk (keep only latest)
             keep_only_latest = getattr(args, 'keep_only_latest', True)
             if keep_only_latest and not last_step:
                 for old_f in os.listdir(ckpt_dir):
-                    if old_f.endswith((".safetensors", "_meta.json")):
+                    if _checkpoint_file_matches_suffix(old_f, checkpoint_suffix):
                         os.remove(os.path.join(ckpt_dir, old_f))
 
-            weights_path = os.path.join(ckpt_dir, f"step_{step:06d}.safetensors")
+            weights_path = os.path.join(ckpt_dir, f"{stem}.safetensors")
             model.save_weights(weights_path)
 
             # Save optimizer state for resume
             if use_multi:
-                opt_path = os.path.join(ckpt_dir, f"step_{step:06d}_optim.safetensors")
+                opt_path = os.path.join(ckpt_dir, f"{stem}_optim.safetensors")
                 _save_optimizer_state(optimizer, opt_path)
 
-            meta_path = os.path.join(ckpt_dir, f"step_{step:06d}_meta.json")
+            meta_path = os.path.join(ckpt_dir, f"{stem}_meta.json")
             meta = {
                 "step": step,
                 "depth": args.depth,
-                "model_name": getattr(args, "model_name", ""),
+                "model_name": model_name,
                 "n_embd": config.n_embd,
                 "n_head": config.n_head,
                 "n_kv_head": config.n_kv_head,

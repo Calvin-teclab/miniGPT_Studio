@@ -64,12 +64,41 @@ def list_checkpoint_weights(depth, source="base", base_dir=None):
     if not os.path.isdir(ckpt_dir):
         return []
     return sorted(
-        f for f in os.listdir(ckpt_dir)
-        if f.endswith(".safetensors") and not f.endswith("_optim.safetensors")
+        (
+            f for f in os.listdir(ckpt_dir)
+            if f.endswith(".safetensors") and not f.endswith("_optim.safetensors")
+        ),
+        key=lambda f: os.path.getmtime(os.path.join(ckpt_dir, f)),
     )
 
 
-def require_checkpoint(depth, source="base", step=None, base_dir=None):
+def _find_checkpoint_by_metadata(ckpt_dir, step=None, model_name=None):
+    """Find a checkpoint by sidecar metadata while supporting named filenames."""
+    matches = []
+    for filename in os.listdir(ckpt_dir):
+        if not filename.endswith("_meta.json"):
+            continue
+        meta_path = os.path.join(ckpt_dir, filename)
+        try:
+            import json
+            with open(meta_path) as f:
+                meta = json.load(f)
+        except Exception:
+            continue
+        if step is not None and meta.get("step") != step:
+            continue
+        if model_name is not None and meta.get("model_name", "") != model_name:
+            continue
+        weights_path = meta_path.replace("_meta.json", ".safetensors")
+        if os.path.exists(weights_path):
+            matches.append((os.path.getmtime(meta_path), weights_path, meta_path))
+    if not matches:
+        return None
+    matches.sort(key=lambda item: item[0])
+    return matches[-1][1], matches[-1][2]
+
+
+def require_checkpoint(depth, source="base", step=None, base_dir=None, model_name=None):
     """Ensure a checkpoint exists and return its weights/meta paths."""
     ckpt_dir = get_checkpoint_dir(depth, source=source, base_dir=base_dir)
     label = "SFT checkpoint" if source == "sft" else "base checkpoint"
@@ -92,7 +121,15 @@ def require_checkpoint(depth, source="base", step=None, base_dir=None):
             )
         raise SetupError(extra)
 
-    if step is None:
+    if model_name is not None:
+        found = _find_checkpoint_by_metadata(ckpt_dir, step=step, model_name=model_name)
+        if not found:
+            raise SetupError(
+                f"Checkpoint '{model_name or 'unnamed'}' was not found in {ckpt_dir}. "
+                "Check /checkpoints in the UI or choose another model."
+            )
+        weights_path, meta_path = found
+    elif step is None:
         weight_files = list_checkpoint_weights(depth, source=source, base_dir=base_dir)
         if not weight_files:
             raise SetupError(
@@ -107,7 +144,7 @@ def require_checkpoint(depth, source="base", step=None, base_dir=None):
         if not os.path.exists(weights_path):
             raise SetupError(
                 f"Checkpoint step {step} was not found in {ckpt_dir}. "
-                "Check /checkpoints in the quickstart UI or omit --step to use the latest checkpoint."
+                "For named checkpoints, choose the model in the UI or pass --model-name."
             )
 
     if not os.path.exists(meta_path):
