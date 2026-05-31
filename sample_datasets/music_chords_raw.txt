@@ -1,0 +1,5 @@
+Key: C major | Style: dream pop | Mood: warm | Progression: Cmaj7 - Em7 - Fmaj7 - G13
+Key: A minor | Style: jazz | Mood: smooth | Progression: Am9 - D13 - Gmaj9 - Cmaj7 - F#dim7 - B7b9 - Em9
+Key: E minor | Style: cinematic | Mood: hopeful | Progression: Emadd9 - Cmaj7 - G - D/F#
+Key: D major | Style: neo-soul | Mood: warm | Progression: Dmaj9 - F#m7 - Gmaj9 - A13sus
+Key: G major | Style: folk | Mood: gentle | Progression: G - D/F# - Em - Cadd9
