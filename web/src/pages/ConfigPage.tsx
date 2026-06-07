@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Settings, Save, RotateCcw, Layers, Cpu, Database, Gauge } from 'lucide-react';
+import { Settings, Save, RotateCcw, Layers, Cpu, Gauge } from 'lucide-react';
 import ParamTooltip from '@/components/ParamTooltip';
 import { cn } from '@/lib/utils';
 import type { ParamConfig } from '@/types';
@@ -111,37 +111,6 @@ const paramConfigs: ParamConfig[] = [
     group: 'optimizer',
   },
   {
-    key: 'data_domain',
-    label: '数据类型',
-    description: '选择训练数据来源。通用文本保持原 FineWeb-Edu 流程；音乐和弦会使用独立缓存目录，不影响原有模型与数据。',
-    type: 'select',
-    options: [
-      { value: 'general', label: '通用文本 (FineWeb-Edu)' },
-      { value: 'music', label: '音乐/和弦数据' },
-    ],
-    default: 'general',
-    group: 'data',
-  },
-  {
-    key: 'n_shards',
-    label: '数据分片数',
-    description: '下载多少个 FineWeb-Edu 数据分片。数量越多数据越丰富，但下载和预处理时间越长。',
-    type: 'number',
-    default: 4,
-    min: 2,
-    max: 32,
-    step: 1,
-    group: 'data',
-  },
-  {
-    key: 'music_data_path',
-    label: '音乐数据文件路径',
-    description: '本地音乐/和弦数据文件路径，支持 .jsonl、.csv、.txt、.md。仅在数据类型选择“音乐/和弦数据”时使用。',
-    type: 'text',
-    default: '',
-    group: 'data',
-  },
-  {
     key: 'memory_limit_gb',
     label: '内存限制 (GB)',
     description: '限制 MLX 使用的内存大小。机器内存较小或同时运行其他程序时，建议使用保守值。',
@@ -157,7 +126,6 @@ const paramConfigs: ParamConfig[] = [
 const groupInfo = {
   model: { icon: Layers, label: '模型架构', description: '定义模型的结构与规模' },
   training: { icon: Cpu, label: '训练超参数', description: '控制训练过程的行为' },
-  data: { icon: Database, label: '数据配置', description: '训练数据的设置' },
   optimizer: { icon: Gauge, label: '优化器配置', description: '参数更新策略' },
 };
 
@@ -186,8 +154,9 @@ export default function ConfigPage() {
 
   const resetDefaults = () => {
     const defaults = defaultValues();
-    setValues(defaults);
-    localStorage.setItem('nanochat_config', JSON.stringify(defaults));
+    const nextValues = { ...values, ...defaults };
+    setValues(nextValues);
+    localStorage.setItem('nanochat_config', JSON.stringify(nextValues));
     setHasSavedConfig(true);
     setSaved(false);
   };
@@ -199,7 +168,7 @@ export default function ConfigPage() {
     setTimeout(() => setSaved(false), 2000);
   };
 
-  const groups = ['model', 'training', 'data', 'optimizer'] as const;
+  const groups = ['model', 'training', 'optimizer'] as const;
 
   return (
     <div className="px-5 py-6 lg:px-6 w-full">
@@ -211,6 +180,9 @@ export default function ConfigPage() {
           </div>
           <p className="text-text-muted">
             配置模型架构与训练参数。悬停在参数名旁的图标上查看详细说明。
+          </p>
+          <p className="text-xs text-text-muted mt-1">
+            数据来源、内置数据集和自定义数据路径请在“训练流程”的“准备训练数据”中选择。
           </p>
           <p className="text-xs text-success mt-2">
             {hasSavedConfig
