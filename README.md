@@ -1,5 +1,9 @@
 # miniGPT Studio
 
+> Copyright (c) 2026 Calvin-teclab. All rights reserved.
+>
+> This project is publicly visible for demonstration, evaluation, and portfolio review only. No license is granted to copy, modify, distribute, commercialize, host, deploy, or claim derivative ownership of the code, visual design, assets, documentation, or concept without prior written permission from the copyright holder.
+
 在 Apple Silicon 上使用 MLX 本地构建、训练、评估和演示小型 GPT 模型。
 
 ![miniGPT Studio 训练监控界面](docs/assets/screenshot-miniGPT.png)
@@ -199,6 +203,14 @@ python -m pytest tests/ -v -m "not slow"      # 跳过慢测试
 如果没有激活 `.venv`，请在这些命令前加上 `uv run`。
 
 测试会使用 mock 类来避免加载真实模型。未安装 `mlx` 时，MLX 相关测试会被跳过。
+
+## 授权说明
+
+Copyright (c) 2026 Calvin-teclab. All rights reserved.
+
+本项目公开可见仅用于演示、评估和作品集审阅。未经版权持有人事先书面许可，不授予复制、修改、分发、商业化、托管、部署，或主张代码、视觉设计、资产、文档、概念及其衍生作品所有权的许可。
+
+第三方和上游组件仍保留其原始许可和版权声明；详见 [LICENSE](LICENSE) 和 [NOTICE](NOTICE)。
 
 ## 致谢
 
