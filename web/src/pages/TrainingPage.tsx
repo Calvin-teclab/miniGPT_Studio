@@ -62,11 +62,13 @@ const RUN_PARAM_KEYS = new Set([
 const DEFAULT_TRAINING_PARAMS: Record<string, string> = {
   depth: '4',
   num_iterations: '500',
+  train_num_iterations: '500',
+  sft_num_iterations: '20',
   max_seq_len: '512',
   device_batch_size: '1',
   window_pattern: 'L',
-  eval_every: '100',
-  sample_every: '10',
+  eval_every: '20',
+  sample_every: '20',
   save_every: '500',
   memory_limit_gb: '8',
   data_domain: 'general',
@@ -75,7 +77,7 @@ const DEFAULT_TRAINING_PARAMS: Record<string, string> = {
   custom_data_path: '',
   music_data_path: '',
   custom_sft_path: 'sample_datasets/chinese_qa_seed.jsonl',
-  custom_sft_epochs: '5',
+  custom_sft_epochs: '2',
   custom_sft_only: '1',
   sft_base_checkpoint_id: '',
   model_name: '',
@@ -506,6 +508,12 @@ export default function TrainingPage() {
       // Load saved config
       const savedConfig = localStorage.getItem('nanochat_config');
       const config = savedConfig ? JSON.parse(savedConfig) : {};
+      if (config.eval_every === '100' || config.eval_every === 100) {
+        config.eval_every = DEFAULT_TRAINING_PARAMS.eval_every;
+      }
+      if (config.sample_every === '10' || config.sample_every === 10) {
+        config.sample_every = DEFAULT_TRAINING_PARAMS.sample_every;
+      }
       const savedModelName = typeof config.model_name === 'string' ? config.model_name.trim() : '';
       const resolvedModelName = savedModelName || modelName.trim() || createDefaultModelName(s, String(config.data_domain || DEFAULT_TRAINING_PARAMS.data_domain));
       if (resolvedModelName !== modelName) {
@@ -519,14 +527,16 @@ export default function TrainingPage() {
           params.set(k, String(v));
         }
       });
+      const stageIterationKey = s === 'train' ? 'train_num_iterations' : 'sft_num_iterations';
+      const stageIterations = String(
+        config[stageIterationKey] || (s === 'train' ? config.num_iterations : undefined) || DEFAULT_TRAINING_PARAMS[stageIterationKey]
+      );
+      params.set('num_iterations', stageIterations);
       if (params.get('num_iterations') === '-1') {
-        params.set('num_iterations', DEFAULT_TRAINING_PARAMS.num_iterations);
+        params.set('num_iterations', DEFAULT_TRAINING_PARAMS[stageIterationKey]);
       }
       if (s === 'train' && params.get('num_iterations') === '500' && params.get('save_every') === '250') {
         params.set('save_every', '500');
-      }
-      if (s === 'sft' && params.get('num_iterations') === DEFAULT_TRAINING_PARAMS.num_iterations) {
-        params.set('num_iterations', '1000');
       }
       if (s === 'sft' && !params.get('custom_sft_path')) {
         params.set('custom_sft_path', DEFAULT_TRAINING_PARAMS.custom_sft_path);
@@ -693,7 +703,10 @@ export default function TrainingPage() {
       stage,
     ]
   );
-  startTrainingRef.current = startTraining;
+
+  useEffect(() => {
+    startTrainingRef.current = startTraining;
+  }, [startTraining]);
 
   // Auto-start once when navigated from the pipeline page.
   useEffect(() => {

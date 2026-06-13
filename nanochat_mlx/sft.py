@@ -14,6 +14,7 @@ import re
 
 import mlx.core as mx
 import mlx.nn as nn
+import mlx.optimizers as optim
 from mlx.utils import tree_map
 
 from nanochat_mlx.gpt import GPT, GPTConfig, loss_fn
@@ -28,6 +29,26 @@ from nanochat_mlx.train import (
 from nanochat_mlx.sft_dataloader import sft_dataloader_bos_bestfit
 
 IDENTITY_URL = "https://karpathy-public.s3.us-west-2.amazonaws.com/identity_conversations.jsonl"
+
+
+def _freeze_value_embed_grads(grads):
+    """Value embeddings are unstable under tiny assistant-only SFT batches."""
+    if isinstance(grads, dict) and isinstance(grads.get("value_embeds"), dict):
+        grads = dict(grads)
+        grads["value_embeds"] = {
+            key: {"weight": mx.zeros_like(value["weight"])}
+            for key, value in grads["value_embeds"].items()
+        }
+    return grads
+
+
+def _snapshot_value_embeds(model):
+    return {key: value.weight for key, value in model.value_embeds.items()}
+
+
+def _restore_value_embeds(model, snapshot):
+    for key, weight in snapshot.items():
+        model.value_embeds[key].weight = weight
 
 
 def _safe_checkpoint_suffix(model_name):
@@ -186,33 +207,41 @@ def sft(args):
     print0(f"Batch: {B}x{T} = {tokens_per_step:,} tok/step, grad_accum={grad_accum_steps}, total={total_batch_size:,}")
 
     # --- Optimizer (weight_decay=0.0 for SFT) ---
-    n_embd = config.n_embd
-    opt_config = OptimizerConfig(
-        n_embd=n_embd,
-        unembedding_lr=args.unembedding_lr,
-        embedding_lr=args.embedding_lr,
-        matrix_lr=args.matrix_lr,
-        weight_decay=0.0,  # pretraining decayed to zero, SFT continues with zero
-        adam_beta1=args.adam_beta1,
-        adam_beta2=args.adam_beta2,
-        scalar_lr=args.scalar_lr,
-    )
-    optimizer = setup_optimizer(model, opt_config)
+    # SFT uses sparse assistant-only supervision. Plain AdamW is more stable than
+    # Muon for small local fine-tunes, so keep Muon as an opt-in path.
+    use_simple_adamw = bool(getattr(args, "use_simple_adamw", 1))
+    if use_simple_adamw:
+        optimizer = optim.AdamW(learning_rate=args.simple_lr, weight_decay=0.0)
+        use_multi_optimizer = False
+        print0(f"Using simple AdamW for SFT, lr={args.simple_lr}")
+    else:
+        n_embd = config.n_embd
+        opt_config = OptimizerConfig(
+            n_embd=n_embd,
+            unembedding_lr=args.unembedding_lr,
+            embedding_lr=args.embedding_lr,
+            matrix_lr=args.matrix_lr,
+            weight_decay=0.0,  # pretraining decayed to zero, SFT continues with zero
+            adam_beta1=args.adam_beta1,
+            adam_beta2=args.adam_beta2,
+            scalar_lr=args.scalar_lr,
+        )
+        optimizer = setup_optimizer(model, opt_config)
+        use_multi_optimizer = True
 
-    # --- Warm-start optimizer from pretrained checkpoint ---
-    if args.load_optimizer:
-        opt_path = weights_path.replace(".safetensors", "_optim.safetensors")
-        if os.path.exists(opt_path):
-            _load_optimizer_state(optimizer, opt_path)
-            print0("Loaded optimizer state from pretrained (momentum buffers, LRs preserved)")
-        else:
-            print0("WARNING: optimizer checkpoint not found, starting with fresh optimizer")
+        # --- Warm-start optimizer from pretrained checkpoint ---
+        if args.load_optimizer:
+            opt_path = weights_path.replace(".safetensors", "_optim.safetensors")
+            if os.path.exists(opt_path):
+                _load_optimizer_state(optimizer, opt_path)
+                print0("Loaded optimizer state from pretrained (momentum buffers, LRs preserved)")
+            else:
+                print0("WARNING: optimizer checkpoint not found, starting with fresh optimizer")
 
-    # Apply init_lr_frac scaling
-    for path in optimizer.initial_lrs:
-        optimizer.initial_lrs[path] *= args.init_lr_frac
-        optimizer.param_config[path]["lr"] = optimizer.initial_lrs[path]
-    print0(f"Initial LR fraction: {args.init_lr_frac}")
+        # Apply init_lr_frac scaling
+        for path in optimizer.initial_lrs:
+            optimizer.initial_lrs[path] *= args.init_lr_frac
+        print0(f"Initial LR fraction: {args.init_lr_frac}")
 
     # --- Dataloader ---
     train_loader = sft_dataloader_bos_bestfit(
@@ -265,8 +294,9 @@ def sft(args):
             weights_save_path = os.path.join(sft_ckpt_dir, f"{stem}.safetensors")
             model.save_weights(weights_save_path)
 
-            opt_save_path = os.path.join(sft_ckpt_dir, f"{stem}_optim.safetensors")
-            _save_optimizer_state(optimizer, opt_save_path)
+            if use_multi_optimizer:
+                opt_save_path = os.path.join(sft_ckpt_dir, f"{stem}_optim.safetensors")
+                _save_optimizer_state(optimizer, opt_save_path)
 
             sft_meta = {
                 "step": step,
@@ -329,13 +359,22 @@ def sft(args):
         # Average gradients
         if grad_accum_steps > 1:
             accum_grads = tree_map(lambda g: g * (1.0 / grad_accum_steps), accum_grads)
+        accum_grads = _freeze_value_embed_grads(accum_grads)
+        frozen_value_embeds = _snapshot_value_embeds(model)
 
         # LR schedule (progress-based)
-        lrm = get_sft_lr_multiplier(progress, args.warmup_ratio, args.warmdown_ratio, args.final_lr_frac)
-        optimizer.set_lr_multiplier(lrm)
-        optimizer.set_muon_momentum(get_muon_momentum(step))
-        optimizer.update(model, accum_grads)
-        mx.eval(model.parameters(), *optimizer.state)
+        if use_multi_optimizer:
+            lrm = get_sft_lr_multiplier(progress, args.warmup_ratio, args.warmdown_ratio, args.final_lr_frac)
+            optimizer.set_lr_multiplier(lrm)
+            optimizer.set_muon_momentum(get_muon_momentum(step))
+            optimizer.update(model, accum_grads)
+            _restore_value_embeds(model, frozen_value_embeds)
+            mx.eval(model.parameters(), *optimizer.state)
+        else:
+            lrm = 1.0
+            optimizer.update(model, accum_grads)
+            _restore_value_embeds(model, frozen_value_embeds)
+            mx.eval(model.parameters(), optimizer.state)
 
         t1 = time.time()
         dt = t1 - t0

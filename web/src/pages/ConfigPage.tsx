@@ -55,14 +55,36 @@ const paramConfigs: ParamConfig[] = [
     group: 'training',
   },
   {
-    key: 'num_iterations',
-    label: '训练步数',
-    description: '总共训练多少步。之前默认自动模式在小模型上只跑 50 步，会很快结束；现在默认 500 步，让您能更清楚地观察 loss、速度和保存过程。',
+    key: 'train_num_iterations',
+    label: '预训练步数',
+    description: '预训练阶段总共训练多少步。预训练负责学习语言基础规律，通常应明显多于 SFT，例如 3000 到 5000 步。',
     type: 'number',
     default: 500,
     min: -1,
     max: 100000,
     step: 100,
+    group: 'training',
+  },
+  {
+    key: 'sft_num_iterations',
+    label: 'SFT 微调步数',
+    description: 'SFT 阶段总共训练多少步。默认 20 步用于快速冒烟测试；想训练出更好问答效果时建议改为 1000 到 1500 步。',
+    type: 'number',
+    default: 20,
+    min: -1,
+    max: 100000,
+    step: 100,
+    group: 'training',
+  },
+  {
+    key: 'custom_sft_epochs',
+    label: 'SFT 数据重复轮次',
+    description: '自定义 SFT 数据在训练集中重复混入几轮。默认 2 轮用于快速验证；数据较少且想增强问答效果时可以调到 5。',
+    type: 'number',
+    default: 2,
+    min: 0,
+    max: 10,
+    step: 1,
     group: 'training',
   },
   {
@@ -81,18 +103,18 @@ const paramConfigs: ParamConfig[] = [
     label: '验证间隔',
     description: '每隔多少步运行一次验证。较小的值反馈更及时，但训练会更慢。',
     type: 'number',
-    default: 100,
+    default: 20,
     min: -1,
     max: 10000,
-    step: 100,
+    step: 10,
     group: 'training',
   },
   {
     key: 'sample_every',
     label: '样本生成间隔',
-    description: '预训练阶段每隔多少步让当前模型生成文本样本。设为 10 可以更快看到模型输出变化；SFT 当前主要展示 loss，暂不生成样本。',
+    description: '预训练阶段每隔多少步让当前模型生成文本样本。默认 20 步适合快速冒烟；正式训练可改为 100。',
     type: 'number',
-    default: 10,
+    default: 20,
     min: -1,
     max: 10000,
     step: 10,
@@ -136,7 +158,18 @@ const loadSavedValues = () => {
   const defaults = defaultValues();
   try {
     const saved = localStorage.getItem('nanochat_config');
-    return saved ? { ...defaults, ...(JSON.parse(saved) as Record<string, ConfigValue>) } : defaults;
+    if (!saved) return defaults;
+    const parsed = JSON.parse(saved) as Record<string, ConfigValue>;
+    if (parsed.num_iterations !== undefined && parsed.train_num_iterations === undefined) {
+      parsed.train_num_iterations = parsed.num_iterations;
+    }
+    if (parsed.eval_every === 100) {
+      parsed.eval_every = defaults.eval_every;
+    }
+    if (parsed.sample_every === 10) {
+      parsed.sample_every = defaults.sample_every;
+    }
+    return { ...defaults, ...parsed };
   } catch {
     return defaults;
   }

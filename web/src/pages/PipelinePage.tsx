@@ -101,7 +101,7 @@ const defaultDataPrepConfig: DataPrepConfig = {
   custom_data_path: '',
   music_data_path: '',
   custom_sft_path: 'sample_datasets/chinese_qa_seed.jsonl',
-  custom_sft_epochs: 5,
+  custom_sft_epochs: 2,
   custom_sft_only: 1,
   sft_base_checkpoint_id: '',
   tokenizer_method: 'bpe',
@@ -967,7 +967,7 @@ export default function PipelinePage() {
               将基于：{selectedSftBase.name} / {selectedSftBase.dataDomain || 'general'} / {selectedSftBase.datasetScope || 'default'} / d{selectedSftBase.depth} / step={selectedSftBase.step}
             </div>
           )}
-          <div className="mt-2 grid grid-cols-1 xl:grid-cols-[1fr_160px] gap-3">
+          <div className="mt-2">
             <label className="space-y-1">
               <span className="text-xs font-medium text-text-muted">SFT 数据路径</span>
               <input
@@ -978,20 +978,9 @@ export default function PipelinePage() {
                 placeholder="sample_datasets/chinese_qa_seed.jsonl"
               />
             </label>
-            <label className="space-y-1">
-              <span className="text-xs font-medium text-text-muted">重复轮数</span>
-              <input
-                type="number"
-                min={0}
-                max={10}
-                value={dataPrepConfig.custom_sft_epochs}
-                onChange={(e) => updateDataPrepConfig({ custom_sft_epochs: Number(e.target.value) })}
-                className="w-full bg-surface border border-border rounded-lg px-3 py-1.5 text-sm text-text focus:outline-none focus:border-primary"
-              />
-            </label>
           </div>
           <p className="mt-1 text-[11px] text-text-muted">
-            仅在“SFT 微调”阶段传入，不会改变预训练数据缓存目录；支持 prompt/completion JSONL 或 messages 对话 JSONL。
+            仅在“SFT 微调”阶段传入，不会改变预训练数据缓存目录；支持 prompt/completion JSONL 或 messages 对话 JSONL。SFT 数据重复轮次请在“参数配置”中设置。
           </p>
         </div>
 

@@ -27,6 +27,9 @@ def build_parser():
     parser.add_argument("--base-model-name", type=str, default=None,
                         help="Optional base model name to disambiguate same-step checkpoints")
     parser.add_argument("--load-optimizer", type=int, default=1, help="Warm-start optimizer from pretrained (0=no, 1=yes)")
+    parser.add_argument("--use-simple-adamw", type=int, default=1,
+                        help="Use stable plain AdamW for SFT (1) instead of Muon+AdamW (0)")
+    parser.add_argument("--simple-lr", type=float, default=1e-5, help="Learning rate for simple AdamW SFT")
 
     parser.add_argument("--num-iterations", type=int, default=-1, help="Number of steps (-1 = full epoch)")
 
@@ -51,7 +54,7 @@ def build_parser():
     parser.add_argument("--mmlu-epochs", type=int, default=3, help="MMLU epochs in training mixture")
     parser.add_argument("--gsm8k-epochs", type=int, default=4, help="GSM8K epochs in training mixture")
     parser.add_argument("--custom-sft-path", type=str, default="", help="Optional JSONL file for custom SFT data")
-    parser.add_argument("--custom-sft-epochs", type=int, default=5, help="How many times to mix custom SFT data")
+    parser.add_argument("--custom-sft-epochs", type=int, default=2, help="How many times to mix custom SFT data")
     parser.add_argument("--custom-sft-only", type=int, default=1,
                         help="When custom SFT data is provided, train only on it (1) instead of mixing default English tasks (0)")
 

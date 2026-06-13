@@ -41,11 +41,21 @@ def sft_dataloader_bos_bestfit(dataset, tokenizer, B, T, buffer_size=100, num_it
     cursor = 0
     consumed = 0
 
+    def has_supervised_target(mask):
+        return any(mask[1:])
+
     def refill_buffer():
-        nonlocal cursor
+        nonlocal cursor, consumed
         while len(conv_buffer) < buffer_size and cursor < dataset_size:
             conversation = dataset[cursor]
             ids, mask = tokenizer.render_conversation(conversation)
+            if len(ids) > row_capacity:
+                ids = ids[:row_capacity]
+                mask = mask[:row_capacity]
+            if not has_supervised_target(mask):
+                consumed += 1
+                cursor += 1
+                continue
             conv_buffer.append((ids, mask))
             cursor += 1
 
@@ -106,6 +116,7 @@ def sft_dataloader_bos_bestfit(dataset, tokenizer, B, T, buffer_size=100, num_it
         # Build input rows and target rows with padding mask
         input_rows = [row[:-1] for row in rows]
         target_rows = []
+        valid_targets = 0
         for row, target_mask, clen in zip(rows, row_masks, row_lengths):
             target_row = list(row[1:])  # shift by 1 for next-token prediction
             # SFT should optimize only assistant response tokens, not user prompts
@@ -120,7 +131,11 @@ def sft_dataloader_bos_bestfit(dataset, tokenizer, B, T, buffer_size=100, num_it
                 mask_start = max(clen - 1, 0)
                 for j in range(mask_start, T):
                     target_row[j] = -1
+            valid_targets += sum(1 for target in target_row if target != -1)
             target_rows.append(target_row)
+
+        if valid_targets == 0:
+            break
 
         inputs = mx.array(input_rows, dtype=mx.int32)
         targets = mx.array(target_rows, dtype=mx.int32)

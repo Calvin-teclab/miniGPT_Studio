@@ -23,6 +23,7 @@ export default function App() {
       <Routes>
         <Route element={<Layout />}>
           <Route index element={<PipelinePage />} />
+          <Route path="pipeline" element={<PipelinePage />} />
           <Route path="config" element={<ConfigPage />} />
           <Route path="training" element={<TrainingPage />} />
           <Route path="eval" element={<EvalPage />} />

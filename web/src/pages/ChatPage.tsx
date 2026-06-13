@@ -269,7 +269,7 @@ export default function ChatPage() {
         setTimeout(() => inputRef.current?.focus(), 0);
       }
     }
-  }, [input, isGenerating, isLoaded, messages, settings, cancelActiveGeneration]);
+  }, [input, isGenerating, isLoaded, messages, settings]);
 
   const clearChat = () => {
     cancelActiveGeneration();
