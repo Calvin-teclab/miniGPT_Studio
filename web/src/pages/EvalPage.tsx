@@ -21,27 +21,17 @@ const benchmarks = [
   {
     id: 'arc_easy',
     name: 'ARC-Easy',
-    description: '小学科学选择题，测试基础推理能力',
-  },
-  {
-    id: 'arc_challenge',
-    name: 'ARC-Challenge',
-    description: '困难版科学选择题，需要更深层推理',
+    description: '基础科学四选一，用于快速观察是否高于随机猜测',
   },
   {
     id: 'mmlu',
     name: 'MMLU',
-    description: '大规模多任务语言理解，覆盖 57 个学科领域',
+    description: '综合学科四选一，结果需结合 25% 随机基线解读',
   },
   {
     id: 'gsm8k',
     name: 'GSM8K',
-    description: '小学数学应用题，测试多步推理和计算能力',
-  },
-  {
-    id: 'humaneval',
-    name: 'HumanEval',
-    description: 'Python 代码生成测试，评估编程能力',
+    description: '数学应用题生成式评测，必须生成正确最终答案',
   },
 ];
 
@@ -55,6 +45,18 @@ function downloadTextFile(filename: string, content: string, type = 'text/markdo
   link.click();
   link.remove();
   setTimeout(() => URL.revokeObjectURL(url), 3000);
+}
+
+function formatPercent(value?: number) {
+  return typeof value === 'number' ? `${(value * 100).toFixed(1)}%` : '-';
+}
+
+function getScoringLabel(scoring?: EvalResult['scoring']) {
+  return scoring === 'categorical_logit' ? '四选一 logits 命中率' : '生成式严格答案匹配';
+}
+
+function getCountLabel(scoring?: EvalResult['scoring']) {
+  return scoring === 'categorical_logit' ? '命中' : '通过';
 }
 
 export default function EvalPage() {
@@ -216,13 +218,14 @@ export default function EvalPage() {
       `- 导出时间：${new Date().toLocaleString()}`,
       `- Checkpoint：${selectedCheckpoint || '-'}`,
       `- 评测任务：${selectedBenchmarks.join(', ')}`,
+      '- 说明：ARC-Easy / MMLU 属于四选一 logits 评测，弱模型也可能随机命中；建议重点看“校正后能力值”。',
       '',
       '## 结果汇总',
       '',
-      '| Benchmark | Score | Total | Accuracy |',
-      '|---|---:|---:|---:|',
+      '| Benchmark | Score | Total | Accuracy | Random Baseline | Adjusted | Scoring |',
+      '|---|---:|---:|---:|---:|---:|---|',
       ...benchmarkResults.map((result) =>
-        `| ${result.benchmark} | ${result.score} | ${result.total} | ${(result.accuracy * 100).toFixed(2)}% |`
+        `| ${result.benchmark} | ${result.score} | ${result.total} | ${formatPercent(result.accuracy)} | ${formatPercent(result.baselineAccuracy)} | ${formatPercent(result.adjustedAccuracy)} | ${getScoringLabel(result.scoring)} |`
       ),
       '',
       '## 运行日志',
@@ -379,6 +382,10 @@ export default function EvalPage() {
             ))}
           </div>
 
+          <div className="mb-6 rounded-xl border border-warning/30 bg-warning/10 px-4 py-3 text-sm text-warning">
+            ARC-Easy 和 MMLU 是四选一 logits 评测，弱模型也会有约 25% 随机命中率；结果页会同时展示随机基线和校正后能力值，避免把猜中误读为真的会做题。
+          </div>
+
           <div className="flex gap-2 mb-6">
             <button
               onClick={runBenchmarks}
@@ -430,17 +437,28 @@ export default function EvalPage() {
               </div>
               <div className="divide-y divide-border">
                 {benchmarkResults.map((result, i) => (
-                  <div key={i} className="px-5 py-4 flex items-center justify-between">
-                    <div>
+                  <div key={i} className="px-5 py-4 flex items-center justify-between gap-4">
+                    <div className="min-w-0">
                       <div className="font-medium text-sm">{result.benchmark}</div>
                       <div className="text-xs text-text-muted mt-0.5">
-                        {result.score}/{result.total} 正确
+                        {result.score}/{result.total} {getCountLabel(result.scoring)}
+                      </div>
+                      <div className="text-xs text-text-muted mt-1">
+                        {getScoringLabel(result.scoring)}
+                        {typeof result.baselineAccuracy === 'number' && (
+                          <> · 随机基线 {formatPercent(result.baselineAccuracy)}</>
+                        )}
                       </div>
                     </div>
                     <div className="text-right">
                       <div className="text-2xl font-bold text-primary">
                         {(result.accuracy * 100).toFixed(1)}%
                       </div>
+                      {typeof result.adjustedAccuracy === 'number' && (
+                        <div className="text-xs text-text-muted mt-1">
+                          校正后 {formatPercent(result.adjustedAccuracy)}
+                        </div>
+                      )}
                     </div>
                   </div>
                 ))}

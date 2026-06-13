@@ -594,12 +594,12 @@ async def api_params():
 # ---------------------------------------------------------------------------
 
 BENCHMARK_REGISTRY = {
-    "arc_easy": {"name": "ARC-Easy", "task_name": "ARC-Easy"},
-    "arc_challenge": {"name": "ARC-Challenge", "task_name": "ARC-Challenge"},
-    "mmlu": {"name": "MMLU", "task_name": "MMLU"},
-    "gsm8k": {"name": "GSM8K", "task_name": "GSM8K"},
-    "humaneval": {"name": "HumanEval", "task_name": "HumanEval"},
-    "spellingbee": {"name": "SpellingBee", "task_name": "SpellingBee"},
+    "arc_easy": {"name": "ARC-Easy", "task_name": "ARC-Easy", "baseline": 0.25, "scoring": "categorical_logit"},
+    "arc_challenge": {"name": "ARC-Challenge", "task_name": "ARC-Challenge", "baseline": 0.25, "scoring": "categorical_logit"},
+    "mmlu": {"name": "MMLU", "task_name": "MMLU", "baseline": 0.25, "scoring": "categorical_logit"},
+    "gsm8k": {"name": "GSM8K", "task_name": "GSM8K", "baseline": 0.0, "scoring": "generative_exact"},
+    "humaneval": {"name": "HumanEval", "task_name": "HumanEval", "baseline": 0.0, "scoring": "generative_exact"},
+    "spellingbee": {"name": "SpellingBee", "task_name": "SpellingBee", "baseline": 0.0, "scoring": "generative_exact"},
 }
 
 
@@ -690,6 +690,13 @@ async def api_eval_benchmark(checkpoint: str = "", benchmarks: str = "arc_easy")
                         "score": score,
                         "total": total,
                         "accuracy": accuracy,
+                        "baselineAccuracy": info["baseline"],
+                        "adjustedAccuracy": (
+                            max(0.0, (accuracy - info["baseline"]) / (1.0 - info["baseline"]))
+                            if info["baseline"] < 1.0
+                            else accuracy
+                        ),
+                        "scoring": info["scoring"],
                     },
                 }
                 yield f"data: {json.dumps(result_data)}\n\n"

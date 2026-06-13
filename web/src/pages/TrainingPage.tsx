@@ -63,7 +63,7 @@ const DEFAULT_TRAINING_PARAMS: Record<string, string> = {
   depth: '4',
   num_iterations: '500',
   train_num_iterations: '500',
-  sft_num_iterations: '20',
+  sft_num_iterations: '100',
   max_seq_len: '512',
   device_batch_size: '1',
   window_pattern: 'L',
@@ -340,6 +340,16 @@ export default function TrainingPage() {
   }, []);
   const setModelName = useCallback((value: SetStateAction<string>) => {
     updateTrainingMonitor((prev) => ({ ...prev, modelName: resolveState(value, prev.modelName) }));
+  }, []);
+  const handleStageChange = useCallback((nextStage: 'train' | 'sft') => {
+    updateTrainingMonitor((prev) => {
+      if (prev.stage === nextStage) return prev;
+      return {
+        ...createEmptyTrainingSnapshot(nextStage),
+        modelName: prev.modelName || getSavedModelName() || createDefaultModelName(nextStage),
+        logs: [`已切换到${nextStage === 'train' ? '预训练' : 'SFT 微调'}，上一阶段的监控事件已清空。`],
+      };
+    });
   }, []);
 
   const logsEndRef = useRef<HTMLDivElement>(null);
@@ -817,7 +827,7 @@ export default function TrainingPage() {
         <div className="flex items-center gap-3">
           <select
             value={stage}
-            onChange={(e) => setStage(e.target.value as 'train' | 'sft')}
+            onChange={(e) => handleStageChange(e.target.value as 'train' | 'sft')}
             disabled={isRunning}
             className="bg-surface border border-border rounded-lg px-3 py-2 text-sm text-text"
           >
@@ -986,9 +996,13 @@ export default function TrainingPage() {
                 ))}
               </div>
             ) : (
-              <div className="h-40 flex flex-col items-center justify-center text-text-muted">
-                <Activity className="w-8 h-8 mb-2 opacity-30" />
-                <p className="text-sm">点击开始训练后，这里会展示模型学习的关键事件</p>
+              <div className="min-h-24 flex flex-col items-center justify-center rounded-lg border border-dashed border-border bg-surface text-text-muted px-4 py-5">
+                <Activity className="w-6 h-6 mb-2 opacity-30" />
+                <p className="text-sm text-center">
+                  {stage === 'sft'
+                    ? '点击开始 SFT 微调后，这里只展示本轮 SFT 事件。'
+                    : '点击开始预训练后，这里只展示本轮预训练事件。'}
+                </p>
               </div>
             )}
           </div>

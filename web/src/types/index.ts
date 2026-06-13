@@ -89,6 +89,9 @@ export interface EvalResult {
   score: number;
   total: number;
   accuracy: number;
+  baselineAccuracy?: number;
+  adjustedAccuracy?: number;
+  scoring?: 'categorical_logit' | 'generative_exact';
   details?: Record<string, number>;
 }
 

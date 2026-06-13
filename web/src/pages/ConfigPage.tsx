@@ -68,9 +68,9 @@ const paramConfigs: ParamConfig[] = [
   {
     key: 'sft_num_iterations',
     label: 'SFT 微调步数',
-    description: 'SFT 阶段总共训练多少步。默认 20 步用于快速冒烟测试；想训练出更好问答效果时建议改为 1000 到 1500 步。',
+    description: 'SFT 阶段总共训练多少步。默认 100 步用于快速验证；想训练出更好问答效果时建议改为 1000 到 1500 步。',
     type: 'number',
-    default: 20,
+    default: 100,
     min: -1,
     max: 100000,
     step: 100,
