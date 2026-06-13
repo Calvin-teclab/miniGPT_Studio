@@ -45,17 +45,19 @@ def sft_dataloader_bos_bestfit(dataset, tokenizer, B, T, buffer_size=100, num_it
         nonlocal cursor
         while len(conv_buffer) < buffer_size and cursor < dataset_size:
             conversation = dataset[cursor]
-            ids, _ = tokenizer.render_conversation(conversation)
-            conv_buffer.append(ids)
+            ids, mask = tokenizer.render_conversation(conversation)
+            conv_buffer.append((ids, mask))
             cursor += 1
 
     it = 0
     while True:
         rows = []
+        row_masks = []
         row_lengths = []  # actual content length (before padding) for each row
 
         for _ in range(B):
             row = []
+            row_mask = []
             content_len = row_capacity  # assume full unless padded
 
             while len(row) < row_capacity:
@@ -65,6 +67,7 @@ def sft_dataloader_bos_bestfit(dataset, tokenizer, B, T, buffer_size=100, num_it
                     # Dataset exhausted and buffer empty — pad remainder
                     content_len = len(row)
                     row.extend([bos_token] * (row_capacity - len(row)))
+                    row_mask.extend([0] * (row_capacity - len(row_mask)))
                     break
 
                 remaining = row_capacity - len(row)
@@ -72,24 +75,27 @@ def sft_dataloader_bos_bestfit(dataset, tokenizer, B, T, buffer_size=100, num_it
                 # Best-fit: find largest conversation that fits entirely
                 best_idx = -1
                 best_len = 0
-                for i, conv in enumerate(conv_buffer):
-                    conv_len = len(conv)
+                for i, (conv_ids, _) in enumerate(conv_buffer):
+                    conv_len = len(conv_ids)
                     if conv_len <= remaining and conv_len > best_len:
                         best_idx = i
                         best_len = conv_len
 
                 if best_idx >= 0:
-                    conv = conv_buffer.pop(best_idx)
-                    row.extend(conv)
+                    conv_ids, conv_mask = conv_buffer.pop(best_idx)
+                    row.extend(conv_ids)
+                    row_mask.extend(conv_mask)
                     consumed += 1
                 else:
                     # No conversation fits — pad the remainder
                     content_len = len(row)
                     row.extend([bos_token] * (row_capacity - len(row)))
+                    row_mask.extend([0] * (row_capacity - len(row_mask)))
                     break
 
             row_lengths.append(content_len)
             rows.append(row[:row_capacity])
+            row_masks.append(row_mask[:row_capacity])
 
         it += 1
         progress = min(consumed / dataset_size, 1.0)
@@ -100,8 +106,15 @@ def sft_dataloader_bos_bestfit(dataset, tokenizer, B, T, buffer_size=100, num_it
         # Build input rows and target rows with padding mask
         input_rows = [row[:-1] for row in rows]
         target_rows = []
-        for row, clen in zip(rows, row_lengths):
+        for row, target_mask, clen in zip(rows, row_masks, row_lengths):
             target_row = list(row[1:])  # shift by 1 for next-token prediction
+            # SFT should optimize only assistant response tokens, not user prompts
+            # or chat-control tokens. The mask returned by render_conversation()
+            # is aligned with ids, so target supervision uses mask[1:].
+            shifted_mask = list(target_mask[1:])
+            for j, mask_val in enumerate(shifted_mask):
+                if mask_val == 0:
+                    target_row[j] = -1
             if clen < row_capacity:
                 # Mask targets from content boundary onwards
                 mask_start = max(clen - 1, 0)

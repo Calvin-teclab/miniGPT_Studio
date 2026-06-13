@@ -4,6 +4,7 @@ import { BookOpen, Database, Scissors, Sparkles, Upload } from 'lucide-react';
 import StepCard, { type StepDetail } from '@/components/StepCard';
 import type { PipelineStep } from '@/types';
 import {
+  getAllCheckpoints,
   getSampleDataset,
   getSampleDatasets,
   getStatus,
@@ -11,6 +12,7 @@ import {
   uploadDatasetFile,
   type SampleDataset,
 } from '@/api/client';
+import type { Checkpoint } from '@/types';
 
 const initialSteps: PipelineStep[] = [
   {
@@ -71,6 +73,10 @@ interface DataPrepConfig {
   music_dataset: string;
   custom_data_path: string;
   music_data_path: string;
+  custom_sft_path: string;
+  custom_sft_epochs: number;
+  custom_sft_only: number;
+  sft_base_checkpoint_id: string;
   tokenizer_method: string;
   vocab_size: number;
   doc_cap: number;
@@ -94,6 +100,10 @@ const defaultDataPrepConfig: DataPrepConfig = {
   music_dataset: 'music_starter_chords_raw.jsonl',
   custom_data_path: '',
   music_data_path: '',
+  custom_sft_path: 'sample_datasets/chinese_qa_seed.jsonl',
+  custom_sft_epochs: 5,
+  custom_sft_only: 1,
+  sft_base_checkpoint_id: '',
   tokenizer_method: 'bpe',
   vocab_size: 32768,
   doc_cap: 10000,
@@ -111,6 +121,10 @@ function createDefaultFlowModelName(dataDomain: DataDomain = 'general') {
     String(now.getSeconds()).padStart(2, '0'),
   ].join('');
   return `${dataDomain}-train-${stamp}`;
+}
+
+function isAutoFlowModelName(modelName: string) {
+  return /^(general|music)-train-\d{14}$/.test(modelName.trim());
 }
 
 const loadDataPrepConfig = ({ freshModelName = false } = {}): DataPrepConfig => {
@@ -350,6 +364,7 @@ export default function PipelinePage() {
   );
   const [uploadFile, setUploadFile] = useState<File | null>(null);
   const [sampleDatasets, setSampleDatasets] = useState<SampleDataset[]>([]);
+  const [checkpoints, setCheckpoints] = useState<Checkpoint[]>([]);
   const [editorContent, setEditorContent] = useState('');
   const [editorStatus, setEditorStatus] = useState('');
   const [editorLoading, setEditorLoading] = useState(false);
@@ -362,6 +377,13 @@ export default function PipelinePage() {
   const updateDataPrepConfig = useCallback((patch: Partial<DataPrepConfig>) => {
     setDataPrepConfig((prev) => {
       const next = { ...prev, ...patch };
+      if (
+        patch.data_domain &&
+        patch.data_domain !== prev.data_domain &&
+        (!prev.model_name.trim() || isAutoFlowModelName(prev.model_name))
+      ) {
+        next.model_name = createDefaultFlowModelName(patch.data_domain);
+      }
       const saved = loadDataPrepConfig();
       localStorage.setItem('nanochat_config', JSON.stringify({ ...saved, ...next }));
       return next;
@@ -407,6 +429,29 @@ export default function PipelinePage() {
   const visibleSampleDatasets = sampleDatasets.filter(
     (dataset) => dataset.data_domain === dataPrepConfig.data_domain
   );
+  const baseCheckpoints = checkpoints.filter((checkpoint) => !checkpoint.isSft);
+  const selectedSftBase = baseCheckpoints.find(
+    (checkpoint) => checkpoint.path === dataPrepConfig.sft_base_checkpoint_id
+  );
+  const isChineseOnlineDataset = dataPrepConfig.data_domain === 'general' && dataPrepConfig.text_dataset.startsWith('chinese_');
+  const cacheTarget =
+    dataPrepConfig.data_domain === 'music'
+      ? '~/.cache/nanochat_music'
+      : isChineseOnlineDataset
+        ? '~/.cache/nanochat_chinese'
+        : dataPrepConfig.data_source === 'custom_path' ||
+          dataPrepConfig.data_source === 'upload' ||
+          dataPrepConfig.text_dataset !== 'fineweb_edu'
+        ? '~/.cache/nanochat_custom'
+        : '~/.cache/nanochat_fineweb';
+  const cacheDescription =
+    dataPrepConfig.data_domain === 'music'
+      ? '音乐/和弦数据、tokenizer 和 checkpoint 会写入独立音乐缓存。'
+      : isChineseOnlineDataset
+        ? '中文在线语料会写入独立中文缓存，不会覆盖 FineWeb-Edu 或自定义文本。'
+      : cacheTarget.includes('custom')
+        ? '自定义/示例文字数据会写入独立通用自定义缓存，不会覆盖 FineWeb-Edu。'
+        : 'FineWeb-Edu 会写入独立在线语料缓存，不会被自定义文字数据覆盖。';
 
   useEffect(() => {
     getSampleDatasets()
@@ -414,8 +459,22 @@ export default function PipelinePage() {
       .catch((error) => setEditorStatus(`读取示例数据集失败: ${error instanceof Error ? error.message : String(error)}`));
   }, []);
 
+  const refreshCheckpoints = useCallback(() => {
+    getAllCheckpoints()
+      .then((items) => setCheckpoints(items))
+      .catch((error) => setLogs((prev) => [...prev, `读取 checkpoint 失败: ${error instanceof Error ? error.message : String(error)}`]));
+  }, []);
+
   useEffect(() => {
-    if (dataPrepConfig.data_source !== 'builtin' || selectedSampleId === 'fineweb_edu') {
+    refreshCheckpoints();
+  }, [refreshCheckpoints]);
+
+  useEffect(() => {
+    if (
+      dataPrepConfig.data_source !== 'builtin' ||
+      selectedSampleId === 'fineweb_edu' ||
+      selectedSampleId.startsWith('chinese_')
+    ) {
       setEditorContent('');
       return;
     }
@@ -507,11 +566,20 @@ export default function PipelinePage() {
         params.set('data_domain', String(config.data_domain));
       }
       if (config.data_source) params.set('data_source', String(config.data_source));
+      if (config.text_dataset) params.set('text_dataset', String(config.text_dataset));
       if (config.custom_data_path) params.set('custom_data_path', String(config.custom_data_path));
       if (config.music_data_path) params.set('music_data_path', String(config.music_data_path));
       if (config.tokenizer_method) params.set('tokenizer_method', String(config.tokenizer_method));
       if (config.vocab_size) params.set('vocab_size', String(config.vocab_size));
       if (config.doc_cap) params.set('doc_cap', String(config.doc_cap));
+      if (step.stage === 'sft' && config.custom_sft_path) {
+        params.set('custom_sft_path', String(config.custom_sft_path));
+        params.set('custom_sft_epochs', String(config.custom_sft_epochs || 1));
+        params.set('custom_sft_only', String(config.custom_sft_only ?? 1));
+      }
+      if (step.stage === 'sft' && config.sft_base_checkpoint_id) {
+        params.set('sft_base_checkpoint_id', String(config.sft_base_checkpoint_id));
+      }
       if (step.stage === 'data' && config.n_shards) {
         params.set('n_shards', String(config.n_shards));
       }
@@ -533,10 +601,16 @@ export default function PipelinePage() {
             const datasetId = dataDomain === 'music' ? config.music_dataset : config.text_dataset;
             const sample = sampleDatasets.find((dataset) => dataset.id === datasetId);
             if (sample) {
+              config.custom_data_path = sample.path;
+              if (dataDomain === 'music') config.music_data_path = sample.path;
+              localStorage.setItem('nanochat_config', JSON.stringify(config));
               params.set('data_source', 'custom_path');
               params.set('custom_data_path', sample.path);
               if (dataDomain === 'music') params.set('music_data_path', sample.path);
               setLogs((prev) => [...prev, `使用可编辑示例数据集: ${sample.path}`]);
+            } else if (dataDomain === 'general' && datasetId === 'fineweb_edu') {
+              config.custom_data_path = '';
+              localStorage.setItem('nanochat_config', JSON.stringify(config));
             }
           }
         } catch (error) {
@@ -560,6 +634,9 @@ export default function PipelinePage() {
           prev.map((s, i) => (i === index ? { ...s, status: 'completed' } : s))
         );
         setActiveStep(index + 1);
+        if (step.stage === 'train' || step.stage === 'sft') {
+          refreshCheckpoints();
+        }
       };
 
       const applyError = (text: string) => {
@@ -662,7 +739,7 @@ export default function PipelinePage() {
         runningStepRef.current = false;
       }
     },
-    [steps, navigate, dataPrepConfig, uploadFile, sampleDatasets]
+    [steps, navigate, dataPrepConfig, uploadFile, sampleDatasets, refreshCheckpoints]
   );
 
   const skipStep = useCallback((index: number) => {
@@ -731,15 +808,25 @@ export default function PipelinePage() {
           </select>
         </label>
 
+        <div className="xl:col-span-2 rounded-lg border border-info/20 bg-info/10 px-3 py-2">
+          <div className="text-xs font-medium text-info">本次训练缓存目录：{cacheTarget}</div>
+          <p className="mt-0.5 text-[11px] text-text-muted">{cacheDescription}</p>
+        </div>
+
         {dataPrepConfig.data_source === 'builtin' && dataPrepConfig.data_domain === 'general' && (
           <label className="space-y-1">
             <span className="text-xs font-medium text-text-muted">可选文字数据集</span>
             <select
               value={dataPrepConfig.text_dataset}
-              onChange={(e) => updateDataPrepConfig({ text_dataset: e.target.value })}
+              onChange={(e) => updateDataPrepConfig({
+                text_dataset: e.target.value,
+                custom_data_path: e.target.value === 'fineweb_edu' ? '' : dataPrepConfig.custom_data_path,
+              })}
               className="w-full bg-surface border border-border rounded-lg px-3 py-1.5 text-sm text-text focus:outline-none focus:border-primary"
             >
               <option value="fineweb_edu">FineWeb-Edu 教育文本（在线下载）</option>
+              <option value="chinese_wiki">中文百科文本（在线下载，小规模）</option>
+              <option value="chinese_alpaca">中文问答指令文本（在线下载，小规模）</option>
               {visibleSampleDatasets.map((dataset) => (
                 <option key={dataset.id} value={dataset.id}>
                   {dataset.label}
@@ -854,6 +941,59 @@ export default function PipelinePage() {
             </p>
           </label>
         )}
+
+        <div className="xl:col-span-2 rounded-xl border border-primary/20 bg-primary/5 px-3 py-2">
+          <div className="text-xs font-medium text-primary">SFT 问答数据</div>
+          <label className="mt-2 block space-y-1">
+            <span className="text-xs font-medium text-text-muted">SFT 基座模型</span>
+            <select
+              value={dataPrepConfig.sft_base_checkpoint_id}
+              onChange={(e) => updateDataPrepConfig({ sft_base_checkpoint_id: e.target.value })}
+              className="w-full bg-surface border border-border rounded-lg px-3 py-1.5 text-sm text-text focus:outline-none focus:border-primary"
+            >
+              <option value="">自动选择：当前数据域 / 当前 depth 的最新预训练模型</option>
+              {baseCheckpoints.map((checkpoint) => (
+                <option key={checkpoint.path} value={checkpoint.path}>
+                  {`${checkpoint.name} | ${checkpoint.dataDomain || 'general'}/${checkpoint.datasetScope || 'default'} | d${checkpoint.depth} | step=${checkpoint.step}`}
+                </option>
+              ))}
+            </select>
+            <p className="text-[11px] text-text-muted">
+              选择后，SFT 会精确基于该预训练 checkpoint；不选择则沿用旧逻辑自动找最新 base。
+            </p>
+          </label>
+          {selectedSftBase && (
+            <div className="mt-2 rounded-lg border border-border bg-surface px-3 py-2 text-[11px] text-text-muted">
+              将基于：{selectedSftBase.name} / {selectedSftBase.dataDomain || 'general'} / {selectedSftBase.datasetScope || 'default'} / d{selectedSftBase.depth} / step={selectedSftBase.step}
+            </div>
+          )}
+          <div className="mt-2 grid grid-cols-1 xl:grid-cols-[1fr_160px] gap-3">
+            <label className="space-y-1">
+              <span className="text-xs font-medium text-text-muted">SFT 数据路径</span>
+              <input
+                type="text"
+                value={dataPrepConfig.custom_sft_path}
+                onChange={(e) => updateDataPrepConfig({ custom_sft_path: e.target.value })}
+                className="w-full bg-surface border border-border rounded-lg px-3 py-1.5 text-sm text-text focus:outline-none focus:border-primary"
+                placeholder="sample_datasets/chinese_qa_seed.jsonl"
+              />
+            </label>
+            <label className="space-y-1">
+              <span className="text-xs font-medium text-text-muted">重复轮数</span>
+              <input
+                type="number"
+                min={0}
+                max={10}
+                value={dataPrepConfig.custom_sft_epochs}
+                onChange={(e) => updateDataPrepConfig({ custom_sft_epochs: Number(e.target.value) })}
+                className="w-full bg-surface border border-border rounded-lg px-3 py-1.5 text-sm text-text focus:outline-none focus:border-primary"
+              />
+            </label>
+          </div>
+          <p className="mt-1 text-[11px] text-text-muted">
+            仅在“SFT 微调”阶段传入，不会改变预训练数据缓存目录；支持 prompt/completion JSONL 或 messages 对话 JSONL。
+          </p>
+        </div>
 
         <details className="xl:col-span-2 rounded-xl border border-border bg-surface px-3 py-2">
           <summary className="cursor-pointer text-xs font-medium text-text-muted hover:text-text">

@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  ChevronDown,
+  ChevronUp,
+  Copy,
   Download,
   FileMusic,
   Loader2,
@@ -141,14 +144,12 @@ function isChordSyntax(token: string) {
 
 function buildPrompt(style: string, mood: string, key: string, seed: string) {
   return [
-    'Generate one concise chord progression for a music producer.',
     `Style: ${style}`,
     `Mood: ${mood}`,
     `Key: ${key}`,
-    `Seed progression or roman numerals: ${seed}`,
-    'Return exactly one line in this format:',
-    'Roman: <roman numerals with | bar separators> | Progression: <playable chords>',
-  ].join('\n');
+    `Roman: ${seed}`,
+    'Progression:',
+  ].join(' | ');
 }
 
 function getInitialMusicConfig() {
@@ -346,6 +347,8 @@ export default function MusicPage() {
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [isPlaying, setIsPlaying] = useState(false);
+  const [isPromptExpanded, setIsPromptExpanded] = useState(false);
+  const [promptCopied, setPromptCopied] = useState(false);
   const generatingRef = useRef(false);
   const audioContextRef = useRef<AudioContext | null>(null);
   const playbackTimerRef = useRef<number | null>(null);
@@ -398,6 +401,16 @@ export default function MusicPage() {
     setMood(preset.mood);
     setMusicKey(preset.key);
     setSeed(preset.seed);
+  };
+
+  const copyPrompt = async () => {
+    try {
+      await navigator.clipboard.writeText(prompt);
+      setPromptCopied(true);
+      window.setTimeout(() => setPromptCopied(false), 1500);
+    } catch {
+      setError('复制 Prompt 失败，请手动选中复制。');
+    }
   };
 
   const handleLoad = async () => {
@@ -469,10 +482,10 @@ export default function MusicPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           messages,
-          temperature: 0.7,
-          top_k: 50,
-          repetition_penalty: 1.15,
-          max_tokens: 160,
+          temperature: 0.25,
+          top_k: 20,
+          repetition_penalty: 1.35,
+          max_tokens: 80,
         }),
       });
       const data = await response.json().catch(() => ({}));
@@ -731,16 +744,49 @@ export default function MusicPage() {
               <span className="text-xs font-medium text-text-muted">BPM</span>
               <input type="number" min={40} max={220} value={bpm} onChange={(event) => setBpm(Number(event.target.value) || 90)} className="w-full bg-surface border border-border rounded-lg px-3 py-2 text-sm text-text" />
             </label>
-            <div className="md:col-span-2 flex items-center justify-between gap-3 rounded-lg border border-border bg-surface px-3 py-2">
-              <div className="text-xs text-text-muted font-mono truncate">{prompt.replace(/\n/g, ' / ')}</div>
-              <button
-                onClick={generate}
-                disabled={!isLoaded || isGenerating}
-                className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-primary text-white text-sm font-medium hover:bg-primary-dark disabled:opacity-50 shrink-0"
+            <div className="md:col-span-2 rounded-lg border border-border bg-surface overflow-hidden">
+              <div className="px-3 py-2 border-b border-border flex items-center justify-between gap-3">
+                <div>
+                  <div className="text-xs font-medium text-text">实际发送 Prompt</div>
+                  <div className="text-[11px] text-text-muted">根据当前 preset 和生成参数实时拼接。</div>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => setIsPromptExpanded((value) => !value)}
+                    className="flex items-center gap-1 px-2 py-1 rounded-md border border-border text-xs text-text-muted hover:text-text hover:bg-surface-lighter"
+                  >
+                    {isPromptExpanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                    {isPromptExpanded ? '收起' : '展开'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={copyPrompt}
+                    className="flex items-center gap-1 px-2 py-1 rounded-md border border-border text-xs text-text-muted hover:text-text hover:bg-surface-lighter"
+                  >
+                    <Copy className="w-3.5 h-3.5" />
+                    {promptCopied ? '已复制' : '复制'}
+                  </button>
+                </div>
+              </div>
+              <pre
+                className={cn(
+                  'px-3 py-2 text-xs text-text-muted font-mono whitespace-pre-wrap leading-relaxed overflow-hidden',
+                  isPromptExpanded ? 'max-h-80 overflow-y-auto' : 'max-h-16'
+                )}
               >
-                {isGenerating ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
-                生成和弦
-              </button>
+                {prompt}
+              </pre>
+              <div className="px-3 py-2 border-t border-border flex justify-end">
+                <button
+                  onClick={generate}
+                  disabled={!isLoaded || isGenerating}
+                  className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-primary text-white text-sm font-medium hover:bg-primary-dark disabled:opacity-50 shrink-0"
+                >
+                  {isGenerating ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
+                  生成和弦
+                </button>
+              </div>
             </div>
           </div>
         </section>

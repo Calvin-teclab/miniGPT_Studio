@@ -18,6 +18,10 @@ interface StatusDomain {
 }
 
 interface StatusResponse extends StatusDomain {
+  general?: StatusDomain;
+  custom_general?: StatusDomain;
+  chinese_general?: StatusDomain;
+  legacy_general?: StatusDomain;
   music?: StatusDomain;
   chat?: unknown;
   running?: unknown;
@@ -26,6 +30,7 @@ interface StatusResponse extends StatusDomain {
 interface RawCheckpoint {
   checkpoint_id?: string;
   data_domain?: string;
+  dataset_scope?: string;
   depth?: number;
   step?: number;
   source?: string;
@@ -84,6 +89,21 @@ export async function getStatus(): Promise<SystemStatus> {
     const config = JSON.parse(localStorage.getItem('nanochat_config') || '{}') as JsonRecord;
     if (config.data_domain === 'music' && raw.music) {
       selected = raw.music;
+    } else if (
+      config.data_domain === 'general' &&
+      typeof config.text_dataset === 'string' &&
+      config.text_dataset.startsWith('chinese_') &&
+      raw.chinese_general
+    ) {
+      selected = raw.chinese_general;
+    } else if (
+      config.data_domain === 'general' &&
+      (config.data_source === 'custom_path' || config.data_source === 'upload' || config.text_dataset !== 'fineweb_edu') &&
+      raw.custom_general
+    ) {
+      selected = raw.custom_general;
+    } else if (config.data_domain === 'general' && raw.general) {
+      selected = raw.general;
     }
   } catch {
     selected = raw;
@@ -109,32 +129,7 @@ function checkpointPreference(checkpoint: Checkpoint) {
 export async function getCheckpoints(): Promise<Checkpoint[]> {
   const res = await fetch(`${BASE}/checkpoints`);
   const raw = await parseJsonOrThrow<RawCheckpoint[]>(res);
-  const checkpoints = raw.map((cp) => {
-    const fallbackName = `${cp.data_domain === 'music' ? 'music_' : ''}d${cp.depth}_${cp.source}_step${cp.step}`;
-    const displayName = cp.display_name || cp.model_name || fallbackName;
-    const legacyDescriptor = [
-      cp.data_domain || 'general',
-      cp.depth || 0,
-      cp.step || 0,
-      cp.source || 'base',
-      encodeURIComponent(cp.model_name || ''),
-    ].join(':');
-    return {
-      path: cp.checkpoint_id || legacyDescriptor,
-      checkpointId: cp.checkpoint_id,
-      name: displayName,
-      modelName: cp.model_name,
-      displayName,
-      depth: cp.depth || 0,
-      step: cp.step || 0,
-      nEmbd: cp.n_embd || 0,
-      isSft: cp.source === 'sft',
-      windowStrategy: cp.window_pattern,
-      dataDomain: cp.data_domain || 'general',
-      source: cp.source,
-      date: cp.date,
-    };
-  });
+  const checkpoints = mapRawCheckpoints(raw);
   const latestByNamedModel = new Map<string, Checkpoint>();
   const unnamed: Checkpoint[] = [];
 
@@ -164,6 +159,42 @@ export async function getCheckpoints(): Promise<Checkpoint[]> {
   }
 
   return [...latestByNamedModel.values(), ...unnamed].sort((a, b) => (b.date || 0) - (a.date || 0));
+}
+
+function mapRawCheckpoints(raw: RawCheckpoint[]): Checkpoint[] {
+  return raw.map((cp) => {
+    const fallbackName = `${cp.data_domain === 'music' ? 'music_' : ''}d${cp.depth}_${cp.source}_step${cp.step}`;
+    const displayName = cp.display_name || cp.model_name || fallbackName;
+    const legacyDescriptor = [
+      cp.data_domain || 'general',
+      cp.depth || 0,
+      cp.step || 0,
+      cp.source || 'base',
+      encodeURIComponent(cp.model_name || ''),
+    ].join(':');
+    return {
+      path: cp.checkpoint_id || legacyDescriptor,
+      checkpointId: cp.checkpoint_id,
+      name: displayName,
+      modelName: cp.model_name,
+      displayName,
+      depth: cp.depth || 0,
+      step: cp.step || 0,
+      nEmbd: cp.n_embd || 0,
+      isSft: cp.source === 'sft',
+      windowStrategy: cp.window_pattern,
+      dataDomain: cp.data_domain || 'general',
+      datasetScope: cp.dataset_scope,
+      source: cp.source,
+      date: cp.date,
+    };
+  });
+}
+
+export async function getAllCheckpoints(): Promise<Checkpoint[]> {
+  const res = await fetch(`${BASE}/checkpoints`);
+  const raw = await parseJsonOrThrow<RawCheckpoint[]>(res);
+  return mapRawCheckpoints(raw).sort((a, b) => (b.date || 0) - (a.date || 0));
 }
 
 // Run a pipeline stage with SSE - returns EventSource for streaming

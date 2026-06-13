@@ -48,7 +48,14 @@ const RUN_PARAM_KEYS = new Set([
   'sample_every',
   'memory_limit_gb',
   'data_domain',
+  'data_source',
+  'text_dataset',
+  'custom_data_path',
   'music_data_path',
+  'custom_sft_path',
+  'custom_sft_epochs',
+  'custom_sft_only',
+  'sft_base_checkpoint_id',
   'model_name',
 ]);
 
@@ -63,7 +70,14 @@ const DEFAULT_TRAINING_PARAMS: Record<string, string> = {
   save_every: '500',
   memory_limit_gb: '8',
   data_domain: 'general',
+  data_source: 'builtin',
+  text_dataset: 'fineweb_edu',
+  custom_data_path: '',
   music_data_path: '',
+  custom_sft_path: 'sample_datasets/chinese_qa_seed.jsonl',
+  custom_sft_epochs: '5',
+  custom_sft_only: '1',
+  sft_base_checkpoint_id: '',
   model_name: '',
 };
 const TRAINING_STATE_KEY = 'minigpt_training_monitor_state';
@@ -333,7 +347,7 @@ export default function TrainingPage() {
 
   useEffect(() => {
     if (isRunning) return;
-    if (autoStart && stage !== autoStart) {
+    if (autoStart && !autoStartedRef.current && stage !== autoStart) {
       setStage(autoStart);
     }
     const savedModelName = getSavedModelName();
@@ -512,7 +526,16 @@ export default function TrainingPage() {
         params.set('save_every', '500');
       }
       if (s === 'sft' && params.get('num_iterations') === DEFAULT_TRAINING_PARAMS.num_iterations) {
-        params.set('num_iterations', '200');
+        params.set('num_iterations', '1000');
+      }
+      if (s === 'sft' && !params.get('custom_sft_path')) {
+        params.set('custom_sft_path', DEFAULT_TRAINING_PARAMS.custom_sft_path);
+      }
+      if (s === 'sft' && !params.get('custom_sft_epochs')) {
+        params.set('custom_sft_epochs', DEFAULT_TRAINING_PARAMS.custom_sft_epochs);
+      }
+      if (s === 'sft' && !params.get('custom_sft_only')) {
+        params.set('custom_sft_only', DEFAULT_TRAINING_PARAMS.custom_sft_only);
       }
       params.set('_ts', String(Date.now()));
       recordPhase('prepare', `启动${s === 'train' ? '预训练' : 'SFT 微调'}：${params.toString()}`);

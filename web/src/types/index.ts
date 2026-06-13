@@ -78,6 +78,7 @@ export interface Checkpoint {
   isSft: boolean;
   windowStrategy?: string;
   dataDomain?: string;
+  datasetScope?: string;
   source?: string;
   date?: number;
 }

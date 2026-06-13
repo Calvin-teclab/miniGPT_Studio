@@ -64,13 +64,14 @@ loaded_domain = None
 loaded_model_name = None
 
 
-def _encode_checkpoint_id(data_domain, depth, source, meta_filename):
+def _encode_checkpoint_id(data_domain, depth, source, meta_filename, base_key=None):
     payload = json.dumps(
         {
             "data_domain": data_domain,
             "depth": depth,
             "source": source,
             "meta": meta_filename,
+            "base_key": base_key,
         },
         separators=(",", ":"),
     ).encode("utf-8")
@@ -105,7 +106,8 @@ def resolve_checkpoint_id(checkpoint_id):
     if depth <= 0 or not meta_filename.endswith("_meta.json"):
         raise HTTPException(status_code=400, detail="Invalid checkpoint id payload")
 
-    base = get_music_base_dir() if data_domain == "music" else get_base_dir()
+    base_key = payload.get("base_key")
+    base = get_base_dir_for_key(data_domain, base_key)
     dirname = f"d{depth}_sft" if source == "sft" else f"d{depth}"
     ckpt_dir = os.path.realpath(os.path.join(base, "mlx_checkpoints", dirname))
     ckpt_root = os.path.realpath(os.path.join(base, "mlx_checkpoints"))
@@ -131,6 +133,8 @@ def resolve_checkpoint_id(checkpoint_id):
         "model_name": meta.get("model_name", ""),
         "meta_path": meta_path,
         "ckpt_dir": ckpt_dir,
+        "base_dir": base,
+        "base_key": base_key,
     }
 
 METRIC_RE = re.compile(
@@ -175,14 +179,82 @@ def get_base_dir():
     return base
 
 
+def get_fineweb_base_dir():
+    return os.path.join(os.path.expanduser("~"), ".cache", "nanochat_fineweb")
+
+
+def get_custom_general_base_dir():
+    return os.path.join(os.path.expanduser("~"), ".cache", "nanochat_custom")
+
+
+def get_chinese_general_base_dir():
+    return os.path.join(os.path.expanduser("~"), ".cache", "nanochat_chinese")
+
+
 def get_music_base_dir():
     return os.path.join(os.path.expanduser("~"), ".cache", "nanochat_music")
 
 
-def get_stage_env(data_domain: str):
+def is_chinese_online_dataset(text_dataset: str = ""):
+    return (text_dataset or "").startswith("chinese_")
+
+
+def get_general_base_dir(data_source: str = "builtin", custom_data_path: str = "", text_dataset: str = ""):
+    source = (data_source or "builtin").lower()
+    if is_chinese_online_dataset(text_dataset):
+        return get_chinese_general_base_dir()
+    if source in {"custom_path", "upload"} or custom_data_path:
+        return get_custom_general_base_dir()
+    return get_fineweb_base_dir()
+
+
+def get_base_dir_for_key(data_domain: str, base_key: Optional[str] = None):
+    if data_domain == "music":
+        return get_music_base_dir()
+    if base_key == "fineweb":
+        return get_fineweb_base_dir()
+    if base_key == "custom":
+        return get_custom_general_base_dir()
+    if base_key == "chinese":
+        return get_chinese_general_base_dir()
+    return get_base_dir()
+
+
+def get_base_key(data_domain: str, base_dir: str):
+    if data_domain == "music":
+        return "music"
+    if os.path.realpath(base_dir) == os.path.realpath(get_fineweb_base_dir()):
+        return "fineweb"
+    if os.path.realpath(base_dir) == os.path.realpath(get_custom_general_base_dir()):
+        return "custom"
+    if os.path.realpath(base_dir) == os.path.realpath(get_chinese_general_base_dir()):
+        return "chinese"
+    return "legacy"
+
+
+def iter_training_bases():
+    seen = set()
+    candidates = [
+        ("general", "fineweb", get_fineweb_base_dir()),
+        ("general", "custom", get_custom_general_base_dir()),
+        ("general", "chinese", get_chinese_general_base_dir()),
+        ("general", "legacy", get_base_dir()),
+        ("music", "music", get_music_base_dir()),
+    ]
+    for data_domain, base_key, base in candidates:
+        real = os.path.realpath(base)
+        if real in seen:
+            continue
+        seen.add(real)
+        yield data_domain, base_key, base
+
+
+def get_stage_env(data_domain: str, data_source: str = "builtin", custom_data_path: str = "", text_dataset: str = ""):
     env = {**os.environ, "PYTHONUNBUFFERED": "1"}
     if data_domain == "music":
         env["NANOCHAT_BASE_DIR"] = get_music_base_dir()
+    elif data_domain == "general":
+        env["NANOCHAT_BASE_DIR"] = get_general_base_dir(data_source, custom_data_path, text_dataset)
     return env
 
 
@@ -232,9 +304,13 @@ def check_status():
             "sft": sft_trained,
         }
 
-    general = inspect_base(get_base_dir())
+    fineweb = inspect_base(get_fineweb_base_dir())
+    custom_general = inspect_base(get_custom_general_base_dir())
+    chinese_general = inspect_base(get_chinese_general_base_dir())
+    legacy_general = inspect_base(get_base_dir())
     music = inspect_base(get_music_base_dir())
-    base = get_base_dir()
+    general = fineweb
+    base = get_fineweb_base_dir()
     tok_path = os.path.join(base, "tokenizer", "tokenizer.pkl")
     ckpt_base = os.path.join(base, "mlx_checkpoints")
     shard_count = count_downloaded_shards(base)
@@ -277,6 +353,10 @@ def check_status():
         "chat": chat_ready,
         "chat_model": {"depth": loaded_depth, "step": loaded_step, "source": loaded_source, "data_domain": loaded_domain, "model_name": loaded_model_name} if chat_ready else None,
         "running": running_process_claimed or (running_process is not None and running_process.returncode is None),
+        "general": general,
+        "custom_general": custom_general,
+        "chinese_general": chinese_general,
+        "legacy_general": legacy_general,
         "music": music,
     }
 
@@ -319,7 +399,7 @@ async def status():
     return check_status()
 
 
-def preflight_stage(stage: str, depth: int, step: int):
+def preflight_stage(stage: str, depth: int, step: int, model_name: str = None):
     """Validate stage prerequisites before launching subprocesses."""
     if stage == "tokenizer":
         require_training_data()
@@ -327,13 +407,31 @@ def preflight_stage(stage: str, depth: int, step: int):
         require_training_data()
         require_tokenizer()
     elif stage == "sft":
-        require_checkpoint(depth=depth, source="base", step=step if step > 0 else None)
+        require_checkpoint(
+            depth=depth,
+            source="base",
+            step=step if step > 0 else None,
+            model_name=model_name or None,
+        )
         require_tokenizer()
     elif stage == "import" and importlib.util.find_spec("torch") is None:
         raise SetupError(
             "HuggingFace import requires the optional convert dependencies. "
             "Install them first with: uv sync --extra convert"
         )
+
+
+def preflight_stage_with_env(stage: str, depth: int, step: int, env: dict, model_name: str = None):
+    old_base_dir = os.environ.get("NANOCHAT_BASE_DIR")
+    if env.get("NANOCHAT_BASE_DIR"):
+        os.environ["NANOCHAT_BASE_DIR"] = env["NANOCHAT_BASE_DIR"]
+    try:
+        preflight_stage(stage, depth, step, model_name=model_name)
+    finally:
+        if old_base_dir is None:
+            os.environ.pop("NANOCHAT_BASE_DIR", None)
+        else:
+            os.environ["NANOCHAT_BASE_DIR"] = old_base_dir
 
 
 @app.get("/run/{stage}")
@@ -348,9 +446,14 @@ async def run_stage(stage: str, n_shards: int = 4, depth: int = 4,
                     music_data_path: str = "",
                     data_source: str = "builtin",
                     custom_data_path: str = "",
+                    text_dataset: str = "fineweb_edu",
                     tokenizer_method: str = "bpe",
                     vocab_size: int = 32768,
                     doc_cap: int = 10000,
+                    custom_sft_path: str = "",
+                    custom_sft_epochs: int = 5,
+                    custom_sft_only: int = 1,
+                    sft_base_checkpoint_id: str = "",
                     repo: str = "nanochat-students/base-d20",
                     model_name: str = "",
                     force_tokenizer: bool = False,
@@ -371,13 +474,19 @@ async def run_stage(stage: str, n_shards: int = 4, depth: int = 4,
         return sse_error_response("data_domain must be 'general' or 'music'")
     data_source = data_source.lower()
     tokenizer_method = tokenizer_method.lower()
-    stage_env = get_stage_env(data_domain)
+    custom_path = custom_data_path or music_data_path
+    stage_env = get_stage_env(data_domain, data_source, custom_path, text_dataset)
     checkpoint_model_name = normalize_model_name(model_name, data_domain, stage)
 
     try:
         if stage == "data":
-            custom_path = custom_data_path or music_data_path
-            if data_source in {"custom_path", "upload"} or data_domain == "music":
+            if data_domain == "general" and is_chinese_online_dataset(text_dataset):
+                cmd = [
+                    python, "-u", "-m", "scripts.chinese_data",
+                    "--preset", text_dataset,
+                    "--max-rows", str(max(n_shards, 1) * 1000),
+                ]
+            elif data_source in {"custom_path", "upload"} or data_domain == "music":
                 if not custom_path:
                     return sse_error_response("Custom data path is required for uploaded/custom datasets")
                 cmd = [python, "-u", "-m", "scripts.music_data", "--input", custom_path]
@@ -385,7 +494,7 @@ async def run_stage(stage: str, n_shards: int = 4, depth: int = 4,
                 cmd = [python, "-u", "-m", "nanochat_mlx.dataset", "-n", str(n_shards)]
         elif stage == "tokenizer":
             if data_domain == "general":
-                preflight_stage(stage, depth, step)
+                preflight_stage_with_env(stage, depth, step, stage_env)
             if tokenizer_method != "bpe":
                 return sse_error_response("Current backend only supports BPE tokenization")
             cmd = [
@@ -395,7 +504,7 @@ async def run_stage(stage: str, n_shards: int = 4, depth: int = 4,
             ]
         elif stage == "train":
             if data_domain == "general":
-                preflight_stage(stage, depth, step)
+                preflight_stage_with_env(stage, depth, step, stage_env)
             cmd = [python, "-u", "-m", "scripts.train",
                    f"--depth={depth}",
                    f"--max-seq-len={max_seq_len}",
@@ -412,14 +521,35 @@ async def run_stage(stage: str, n_shards: int = 4, depth: int = 4,
             if use_simple_adamw:
                 cmd.append("--use-simple-adamw")
         elif stage == "sft":
+            base_model_name = None
+            if sft_base_checkpoint_id:
+                resolved_base = resolve_checkpoint_id(sft_base_checkpoint_id)
+                if resolved_base["source"] != "base":
+                    return sse_error_response("SFT base checkpoint must be a pretrained base checkpoint")
+                data_domain = resolved_base["data_domain"]
+                depth = resolved_base["depth"]
+                step = resolved_base["step"]
+                base_model_name = resolved_base["model_name"] or None
+                stage_env["NANOCHAT_BASE_DIR"] = resolved_base["base_dir"]
             if data_domain == "general":
-                preflight_stage(stage, depth, step)
+                preflight_stage_with_env(stage, depth, step, stage_env, model_name=base_model_name)
             cmd = [python, "-u", "-m", "scripts.sft",
                    f"--depth={depth}",
                    f"--device-batch-size={device_batch_size}",
                    f"--memory-limit-gb={memory_limit_gb}",
                    f"--eval-every={eval_every}",
                    f"--model-name={checkpoint_model_name}"]
+            if base_model_name:
+                cmd.append(f"--base-model-name={base_model_name}")
+            if custom_sft_path:
+                resolved_sft_path = custom_sft_path
+                if not os.path.isabs(resolved_sft_path):
+                    resolved_sft_path = os.path.abspath(
+                        os.path.join(os.path.dirname(__file__), "..", resolved_sft_path)
+                    )
+                cmd.append(f"--custom-sft-path={resolved_sft_path}")
+                cmd.append(f"--custom-sft-epochs={custom_sft_epochs}")
+                cmd.append(f"--custom-sft-only={custom_sft_only}")
             if step > 0:
                 cmd.append(f"--step={step}")
             if num_iterations > 0:
@@ -526,9 +656,14 @@ async def run_stage_sync(stage: str, n_shards: int = 4, depth: int = 4,
                          music_data_path: str = "",
                          data_source: str = "builtin",
                          custom_data_path: str = "",
+                         text_dataset: str = "fineweb_edu",
                          tokenizer_method: str = "bpe",
                          vocab_size: int = 32768,
                          doc_cap: int = 10000,
+                         custom_sft_path: str = "",
+                         custom_sft_epochs: int = 5,
+                         custom_sft_only: int = 1,
+                         sft_base_checkpoint_id: str = "",
                          repo: str = "nanochat-students/base-d20",
                          model_name: str = "",
                          force_tokenizer: bool = False,
@@ -545,8 +680,11 @@ async def run_stage_sync(stage: str, n_shards: int = 4, depth: int = 4,
         eval_every=eval_every, sample_every=sample_every,
         memory_limit_gb=memory_limit_gb,
         data_domain=data_domain, music_data_path=music_data_path,
-        data_source=data_source, custom_data_path=custom_data_path,
+        data_source=data_source, custom_data_path=custom_data_path, text_dataset=text_dataset,
         tokenizer_method=tokenizer_method, vocab_size=vocab_size, doc_cap=doc_cap,
+        custom_sft_path=custom_sft_path, custom_sft_epochs=custom_sft_epochs,
+        custom_sft_only=custom_sft_only,
+        sft_base_checkpoint_id=sft_base_checkpoint_id,
         repo=repo, model_name=model_name, force_tokenizer=force_tokenizer, skip_verify=skip_verify,
     )
     if not isinstance(response, StreamingResponse):
@@ -596,7 +734,7 @@ async def stop():
 @app.get("/checkpoints")
 async def list_checkpoints():
     results = []
-    for data_domain, base in [("general", get_base_dir()), ("music", get_music_base_dir())]:
+    for data_domain, base_key, base in iter_training_bases():
         ckpt_base = os.path.join(base, "mlx_checkpoints")
         if not os.path.isdir(ckpt_base):
             continue
@@ -618,8 +756,9 @@ async def list_checkpoints():
                             meta = json.load(mf)
                         mtime = os.path.getmtime(meta_path)
                         results.append({
-                            "checkpoint_id": _encode_checkpoint_id(data_domain, depth, source, f),
+                            "checkpoint_id": _encode_checkpoint_id(data_domain, depth, source, f, base_key),
                             "data_domain": data_domain,
+                            "dataset_scope": base_key,
                             "depth": depth,
                             "step": meta.get("step", 0),
                             "model_name": meta.get("model_name", ""),
@@ -677,7 +816,7 @@ async def delete_checkpoint(req: DeleteCheckpointRequest):
     ):
         _unload_model()
 
-    base = get_music_base_dir() if data_domain == "music" else get_base_dir()
+    base = resolved["base_dir"] if resolved else get_base_dir_for_key(data_domain)
     dirname = f"d{req.depth}_sft" if source == "sft" else f"d{req.depth}"
     ckpt_dir = os.path.realpath(os.path.join(base, "mlx_checkpoints", dirname))
     ckpt_root = os.path.realpath(os.path.join(base, "mlx_checkpoints"))
@@ -766,6 +905,7 @@ def _unload_model():
 async def chat_load(req: LoadRequest):
     global loaded_engine, loaded_tokenizer, loaded_model, loaded_depth, loaded_step, loaded_source, loaded_domain, loaded_model_name
 
+    resolved = None
     if req.checkpoint_id:
         resolved = resolve_checkpoint_id(req.checkpoint_id)
         req.data_domain = resolved["data_domain"]
@@ -787,10 +927,12 @@ async def chat_load(req: LoadRequest):
 
     try:
         old_base_dir = os.environ.get("NANOCHAT_BASE_DIR")
-        if req.data_domain == "music":
+        if resolved:
+            os.environ["NANOCHAT_BASE_DIR"] = resolved["base_dir"]
+        elif req.data_domain == "music":
             os.environ["NANOCHAT_BASE_DIR"] = get_music_base_dir()
-        elif old_base_dir is not None:
-            os.environ.pop("NANOCHAT_BASE_DIR", None)
+        else:
+            os.environ["NANOCHAT_BASE_DIR"] = get_base_dir()
         try:
             model = load_model(depth=req.depth, step=req.step, source=req.source, model_name=req.model_name)
             tokenizer = get_tokenizer()

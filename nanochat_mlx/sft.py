@@ -92,9 +92,19 @@ def sft(args):
     # --- Load pretrained base checkpoint ---
     base_dir = get_base_dir()
     base_ckpt_dir = os.path.join(base_dir, "mlx_checkpoints", f"d{args.depth}")
+    base_model_name = getattr(args, "base_model_name", None)
 
     if args.step is not None:
-        weights_path, meta_path = require_checkpoint(args.depth, source="base", step=args.step)
+        weights_path, meta_path = require_checkpoint(
+            args.depth,
+            source="base",
+            step=args.step,
+            model_name=base_model_name,
+        )
+        with open(meta_path) as f:
+            meta = json.load(f)
+    elif base_model_name is not None:
+        weights_path, meta_path = require_checkpoint(args.depth, source="base", model_name=base_model_name)
         with open(meta_path) as f:
             meta = json.load(f)
     else:
@@ -130,17 +140,35 @@ def sft(args):
     identity_filepath = os.path.join(base_dir, "identity_conversations.jsonl")
     _ensure_identity_conversations(identity_filepath)
 
-    train_tasks = [
-        SmolTalk(split="train"),
-        CustomJSON(filepath=identity_filepath),
-        CustomJSON(filepath=identity_filepath),  # 2 epochs of identity
-        *[MMLU(subset="auxiliary_train", split="train") for _ in range(args.mmlu_epochs)],
-        *[GSM8K(subset="main", split="train") for _ in range(args.gsm8k_epochs)],
-        SimpleSpelling(size=200000, split="train"),
-        SpellingBee(size=80000, split="train"),
-    ]
+    custom_sft_path = getattr(args, "custom_sft_path", "")
+    custom_sft_epochs = max(0, getattr(args, "custom_sft_epochs", 0))
+    custom_sft_only = bool(getattr(args, "custom_sft_only", 1))
+    train_tasks = []
+    if custom_sft_path:
+        custom_task = CustomJSON(filepath=custom_sft_path)
+        if custom_task.num_examples() == 0:
+            raise SetupError(f"Custom SFT file has no examples: {custom_sft_path}")
+        train_tasks.extend(CustomJSON(filepath=custom_sft_path) for _ in range(custom_sft_epochs))
+        print0(
+            f"Custom SFT: {custom_sft_path} "
+            f"({custom_task.num_examples():,} rows x{custom_sft_epochs}, only={custom_sft_only})"
+        )
+    if not custom_sft_path or not custom_sft_only:
+        train_tasks.extend([
+            SmolTalk(split="train"),
+            CustomJSON(filepath=identity_filepath),
+            CustomJSON(filepath=identity_filepath),  # 2 epochs of identity
+            *[MMLU(subset="auxiliary_train", split="train") for _ in range(args.mmlu_epochs)],
+            *[GSM8K(subset="main", split="train") for _ in range(args.gsm8k_epochs)],
+            SimpleSpelling(size=200000, split="train"),
+            SpellingBee(size=80000, split="train"),
+        ])
     train_dataset = TaskMixture(train_tasks)
-    print0(f"Training mixture: {len(train_dataset):,} rows (MMLU x{args.mmlu_epochs}, GSM8K x{args.gsm8k_epochs})")
+    print0(
+        f"Training mixture: {len(train_dataset):,} rows "
+        f"(custom_only={custom_sft_only if custom_sft_path else False}, "
+        f"MMLU x{args.mmlu_epochs}, GSM8K x{args.gsm8k_epochs})"
+    )
 
     val_dataset = TaskMixture([
         SmolTalk(split="test"),
@@ -252,6 +280,10 @@ def sft(args):
                 "window_pattern": config.window_pattern,
                 "source": "sft",
                 "base_checkpoint": weights_path,
+                "base_model_name": base_model_name,
+                "custom_sft_path": custom_sft_path,
+                "custom_sft_epochs": custom_sft_epochs,
+                "custom_sft_only": custom_sft_only,
             }
             sft_meta_path = os.path.join(sft_ckpt_dir, f"{stem}_meta.json")
             with open(sft_meta_path, "w") as f:

@@ -30,7 +30,7 @@ from scripts.quickstart import (
     app as _original_app,
     args,
     check_status,
-    get_base_dir,
+    get_custom_general_base_dir,
     get_music_base_dir,
     get_stage_env,
     list_checkpoints as _list_checkpoints,
@@ -231,7 +231,7 @@ async def api_upload_dataset(req: DatasetUploadRequest):
     if not safe_stem:
         safe_stem = "dataset"
 
-    base_dir = get_music_base_dir() if data_domain == "music" else get_base_dir()
+    base_dir = get_music_base_dir() if data_domain == "music" else get_custom_general_base_dir()
     upload_dir = os.path.join(base_dir, "uploaded_datasets")
     os.makedirs(upload_dir, exist_ok=True)
     path = os.path.join(upload_dir, f"{safe_stem}{suffix}")
@@ -253,9 +253,14 @@ async def api_run_stage(stage: str, n_shards: int = 4, depth: int = 4,
                         music_data_path: str = "",
                         data_source: str = "builtin",
                         custom_data_path: str = "",
+                        text_dataset: str = "fineweb_edu",
                         tokenizer_method: str = "bpe",
                         vocab_size: int = 32768,
                         doc_cap: int = 10000,
+                        custom_sft_path: str = "",
+                        custom_sft_epochs: int = 5,
+                        custom_sft_only: int = 1,
+                        sft_base_checkpoint_id: str = "",
                         repo: str = "nanochat-students/base-d20",
                         model_name: str = "",
                         force_tokenizer: bool = False,
@@ -268,8 +273,11 @@ async def api_run_stage(stage: str, n_shards: int = 4, depth: int = 4,
         eval_every=eval_every, sample_every=sample_every,
         memory_limit_gb=memory_limit_gb,
         data_domain=data_domain, music_data_path=music_data_path,
-        data_source=data_source, custom_data_path=custom_data_path,
+        data_source=data_source, custom_data_path=custom_data_path, text_dataset=text_dataset,
         tokenizer_method=tokenizer_method, vocab_size=vocab_size, doc_cap=doc_cap,
+        custom_sft_path=custom_sft_path, custom_sft_epochs=custom_sft_epochs,
+        custom_sft_only=custom_sft_only,
+        sft_base_checkpoint_id=sft_base_checkpoint_id,
         repo=repo, model_name=model_name, force_tokenizer=force_tokenizer, skip_verify=skip_verify,
     )
 
@@ -286,9 +294,14 @@ async def api_run_stage_sync(stage: str, n_shards: int = 4, depth: int = 4,
                              music_data_path: str = "",
                              data_source: str = "builtin",
                              custom_data_path: str = "",
+                             text_dataset: str = "fineweb_edu",
                              tokenizer_method: str = "bpe",
                              vocab_size: int = 32768,
                              doc_cap: int = 10000,
+                             custom_sft_path: str = "",
+                             custom_sft_epochs: int = 5,
+                             custom_sft_only: int = 1,
+                             sft_base_checkpoint_id: str = "",
                              repo: str = "nanochat-students/base-d20",
                              model_name: str = "",
                              force_tokenizer: bool = False,
@@ -301,8 +314,11 @@ async def api_run_stage_sync(stage: str, n_shards: int = 4, depth: int = 4,
         eval_every=eval_every, sample_every=sample_every,
         memory_limit_gb=memory_limit_gb,
         data_domain=data_domain, music_data_path=music_data_path,
-        data_source=data_source, custom_data_path=custom_data_path,
+        data_source=data_source, custom_data_path=custom_data_path, text_dataset=text_dataset,
         tokenizer_method=tokenizer_method, vocab_size=vocab_size, doc_cap=doc_cap,
+        custom_sft_path=custom_sft_path, custom_sft_epochs=custom_sft_epochs,
+        custom_sft_only=custom_sft_only,
+        sft_base_checkpoint_id=sft_base_checkpoint_id,
         repo=repo, model_name=model_name, force_tokenizer=force_tokenizer, skip_verify=skip_verify,
     )
 
@@ -340,30 +356,10 @@ async def api_chat_generate(request: ChatRequest):
     engine = qs.loaded_engine
     bos_id = tokenizer.get_bos_token_id()
 
-    try:
-        user_start = tokenizer.encode_special("<|user_start|>")
-        user_end = tokenizer.encode_special("<|user_end|>")
-        assistant_start = tokenizer.encode_special("<|assistant_start|>")
-        assistant_end = tokenizer.encode_special("<|assistant_end|>")
-        has_special = True
-    except Exception:
-        has_special = False
-
+    prompt = "\n".join(msg.content for msg in request.messages if msg.content).strip()
     tokens = [bos_id]
-    if has_special:
-        for msg in request.messages:
-            if msg.role == "user":
-                tokens.append(user_start)
-                tokens.extend(tokenizer.encode(msg.content))
-                tokens.append(user_end)
-            elif msg.role == "assistant":
-                tokens.append(assistant_start)
-                tokens.extend(tokenizer.encode(msg.content))
-                tokens.append(assistant_end)
-        tokens.append(assistant_start)
-    else:
-        for msg in request.messages:
-            tokens.extend(tokenizer.encode(msg.content))
+    if prompt:
+        tokens.extend(tokenizer.encode(prompt))
 
     accumulated = []
     last_clean = ""
@@ -377,7 +373,7 @@ async def api_chat_generate(request: ChatRequest):
         seed=random.randint(0, 2**31 - 1),
     ):
         tok = token_column[0]
-        if has_special and (tok == assistant_end or tok == bos_id):
+        if tok == bos_id:
             break
         accumulated.append(tok)
         try:
@@ -626,7 +622,7 @@ async def api_eval_benchmark(checkpoint: str = "", benchmarks: str = "arc_easy")
         try:
             yield f"data: {json.dumps({'type': 'log', 'text': 'Starting benchmark evaluation...'})}\n\n"
 
-            data_domain, depth, step, source, model_name = _parse_checkpoint_descriptor(checkpoint)
+            data_domain, depth, step, source, model_name, base_dir = _parse_checkpoint_descriptor(checkpoint)
 
             model_label = model_name if model_name is not None else "latest/default"
             yield f"data: {json.dumps({'type': 'log', 'text': f'Loading model domain={data_domain} depth={depth} step={step} source={source} model={model_label}...'})}\n\n"
@@ -659,7 +655,9 @@ async def api_eval_benchmark(checkpoint: str = "", benchmarks: str = "arc_easy")
                     *cmd,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.STDOUT,
-                    env=get_stage_env(data_domain),
+                    env={**os.environ, "PYTHONUNBUFFERED": "1", "NANOCHAT_BASE_DIR": base_dir}
+                    if base_dir
+                    else get_stage_env(data_domain),
                 )
 
                 output_lines = []
@@ -723,6 +721,7 @@ class ExternalEvalRequest(BaseModel):
 
 def _parse_checkpoint_descriptor(checkpoint: str):
     data_domain, depth, step, source, model_name = "general", 4, None, "sft", None
+    base_dir = None
     if checkpoint:
         if checkpoint.startswith("cp_"):
             resolved = resolve_checkpoint_id(checkpoint)
@@ -732,6 +731,7 @@ def _parse_checkpoint_descriptor(checkpoint: str):
                 resolved["step"],
                 resolved["source"],
                 resolved["model_name"],
+                resolved["base_dir"],
             )
         parts = checkpoint.split(":")
         offset = 1 if parts and not parts[0].isdigit() else 0
@@ -746,7 +746,7 @@ def _parse_checkpoint_descriptor(checkpoint: str):
         if len(parts) > offset + 3:
             from urllib.parse import unquote
             model_name = unquote(parts[offset + 3] or "")
-    return data_domain, depth, step, source, model_name
+    return data_domain, depth, step, source, model_name, base_dir
 
 
 @api.post("/eval/external")
@@ -760,7 +760,7 @@ async def api_eval_external(request: ExternalEvalRequest):
     """
     import scripts.quickstart as qs
 
-    data_domain, depth, step, source, model_name = _parse_checkpoint_descriptor(request.checkpoint)
+    data_domain, depth, step, source, model_name, _base_dir = _parse_checkpoint_descriptor(request.checkpoint)
     needs_load = (
         qs.loaded_engine is None
         or qs.loaded_tokenizer is None
@@ -771,7 +771,10 @@ async def api_eval_external(request: ExternalEvalRequest):
         or qs.loaded_model_name != model_name
     )
     if needs_load:
-        await _chat_load(LoadRequest(data_domain=data_domain, depth=depth, step=step, source=source, model_name=model_name))
+        if request.checkpoint.startswith("cp_"):
+            await _chat_load(LoadRequest(checkpoint_id=request.checkpoint))
+        else:
+            await _chat_load(LoadRequest(data_domain=data_domain, depth=depth, step=step, source=source, model_name=model_name))
 
     if qs.loaded_engine is None or qs.loaded_tokenizer is None:
         raise HTTPException(status_code=400, detail="No model loaded. POST /api/chat/load first.")
