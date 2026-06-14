@@ -163,9 +163,6 @@ const loadSavedValues = () => {
     if (parsed.num_iterations !== undefined && parsed.train_num_iterations === undefined) {
       parsed.train_num_iterations = parsed.num_iterations;
     }
-    if (parsed.eval_every === 100) {
-      parsed.eval_every = defaults.eval_every;
-    }
     if (parsed.sample_every === 10) {
       parsed.sample_every = defaults.sample_every;
     }

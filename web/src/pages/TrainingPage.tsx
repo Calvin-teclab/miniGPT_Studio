@@ -29,7 +29,8 @@ import {
 } from 'recharts';
 import MetricCard from '@/components/MetricCard';
 import { cn } from '@/lib/utils';
-import type { LossPoint, TrainingSample, LayerActivation, TrainingMetrics } from '@/types';
+import { getCheckpoints } from '@/api/client';
+import type { LossPoint, TrainingSample, LayerActivation, TrainingMetrics, Checkpoint } from '@/types';
 
 // Regex to parse training metrics from log lines (matching backend format)
 const METRIC_RE = /step\s+(\d+)\/(\d+)\s+\|\s+loss\s+([\d.]+)\s+\|\s+lr\s+([\d.e-]+)\s+\|\s+([\d.]+)\s+tok\/s\s+\|\s+ETA\s+(.+)/;
@@ -185,6 +186,15 @@ function createDefaultModelName(stage: 'train' | 'sft', dataDomain = 'general') 
   return `${dataDomain}-${stage}-${stamp}`;
 }
 
+function getSavedSftBaseCheckpointId() {
+  try {
+    const saved = JSON.parse(localStorage.getItem('nanochat_config') || '{}') as Record<string, unknown>;
+    return typeof saved.sft_base_checkpoint_id === 'string' ? saved.sft_base_checkpoint_id : '';
+  } catch {
+    return '';
+  }
+}
+
 function loadTrainingSnapshot(): TrainingMonitorSnapshot | null {
   try {
     const raw = sessionStorage.getItem(TRAINING_STATE_KEY);
@@ -307,6 +317,10 @@ export default function TrainingPage() {
   const phaseEvents = monitorSnapshot.phaseEvents;
   const errorMessage = monitorSnapshot.errorMessage;
   const modelName = monitorSnapshot.modelName;
+  const [checkpoints, setCheckpoints] = useState<Checkpoint[]>([]);
+  const [sftBaseCheckpointId, setSftBaseCheckpointId] = useState(getSavedSftBaseCheckpointId);
+  const baseCheckpoints = checkpoints.filter((checkpoint) => !checkpoint.isSft);
+  const selectedSftBase = baseCheckpoints.find((checkpoint) => checkpoint.path === sftBaseCheckpointId);
 
   const setIsRunning = useCallback((value: SetStateAction<boolean>) => {
     updateTrainingMonitor((prev) => ({ ...prev, isRunning: resolveState(value, prev.isRunning) }));
@@ -351,11 +365,26 @@ export default function TrainingPage() {
       };
     });
   }, []);
+  const handleSftBaseChange = useCallback((checkpointId: string) => {
+    setSftBaseCheckpointId(checkpointId);
+    try {
+      const saved = JSON.parse(localStorage.getItem('nanochat_config') || '{}') as Record<string, unknown>;
+      localStorage.setItem('nanochat_config', JSON.stringify({ ...saved, sft_base_checkpoint_id: checkpointId }));
+    } catch {
+      localStorage.setItem('nanochat_config', JSON.stringify({ sft_base_checkpoint_id: checkpointId }));
+    }
+  }, []);
 
   const logsEndRef = useRef<HTMLDivElement>(null);
   const autoStartedRef = useRef(false);
   const autoStartTimerRef = useRef<number | null>(null);
   const startTrainingRef = useRef<((stageOverride?: 'train' | 'sft') => void) | null>(null);
+
+  useEffect(() => {
+    getCheckpoints()
+      .then((items) => setCheckpoints(items))
+      .catch(() => setCheckpoints([]));
+  }, []);
 
   useEffect(() => {
     if (isRunning) return;
@@ -518,11 +547,11 @@ export default function TrainingPage() {
       // Load saved config
       const savedConfig = localStorage.getItem('nanochat_config');
       const config = savedConfig ? JSON.parse(savedConfig) : {};
-      if (config.eval_every === '100' || config.eval_every === 100) {
-        config.eval_every = DEFAULT_TRAINING_PARAMS.eval_every;
-      }
       if (config.sample_every === '10' || config.sample_every === 10) {
         config.sample_every = DEFAULT_TRAINING_PARAMS.sample_every;
+      }
+      if (s === 'sft') {
+        config.sft_base_checkpoint_id = sftBaseCheckpointId;
       }
       const savedModelName = typeof config.model_name === 'string' ? config.model_name.trim() : '';
       const resolvedModelName = savedModelName || modelName.trim() || createDefaultModelName(s, String(config.data_domain || DEFAULT_TRAINING_PARAMS.data_domain));
@@ -710,6 +739,7 @@ export default function TrainingPage() {
       setModelName,
       setPhaseEvents,
       setSamples,
+      sftBaseCheckpointId,
       stage,
     ]
   );
@@ -878,14 +908,42 @@ export default function TrainingPage() {
       )}
 
       <div className="mb-6 bg-surface-light border border-border rounded-xl p-4">
-        <div className="space-y-1.5">
-          <span className="text-xs font-medium text-text-muted">模型名称</span>
-          <div className="w-full bg-surface border border-border rounded-lg px-3 py-2 text-sm text-text">
-            {modelName}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          <div className="space-y-1.5">
+            <span className="text-xs font-medium text-text-muted">模型名称</span>
+            <div className="w-full bg-surface border border-border rounded-lg px-3 py-2 text-sm text-text">
+              {modelName}
+            </div>
+            <p className="text-[11px] text-text-muted">
+              该名称来自“训练流程”的模型名称配置，并会写入 checkpoint 元数据。需要修改时，请返回“训练流程”调整。
+            </p>
           </div>
-          <p className="text-[11px] text-text-muted">
-            该名称来自“训练流程”的模型名称配置，并会写入 checkpoint 元数据。需要修改时，请返回“训练流程”调整。
-          </p>
+          {stage === 'sft' && (
+            <div className="space-y-1.5">
+              <span className="text-xs font-medium text-text-muted">SFT 基座模型</span>
+              <select
+                value={sftBaseCheckpointId}
+                onChange={(e) => handleSftBaseChange(e.target.value)}
+                disabled={isRunning}
+                className="w-full bg-surface border border-border rounded-lg px-3 py-2 text-sm text-text focus:outline-none focus:border-primary disabled:opacity-60"
+              >
+                <option value="">自动选择：当前数据域 / 当前 depth 的最新预训练模型</option>
+                {baseCheckpoints.map((checkpoint) => (
+                  <option key={checkpoint.path} value={checkpoint.path}>
+                    {`${checkpoint.name} | ${checkpoint.dataDomain || 'general'}/${checkpoint.datasetScope || 'default'} | d${checkpoint.depth} | step=${checkpoint.step}`}
+                  </option>
+                ))}
+              </select>
+              <p className="text-[11px] text-text-muted">
+                选择后，SFT 会精确基于该预训练 checkpoint；不选择则沿用自动查找逻辑。
+              </p>
+              {selectedSftBase && (
+                <div className="rounded-lg border border-border bg-surface px-3 py-2 text-[11px] text-text-muted">
+                  将基于：{selectedSftBase.name} / {selectedSftBase.dataDomain || 'general'} / {selectedSftBase.datasetScope || 'default'} / d{selectedSftBase.depth} / step={selectedSftBase.step}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </div>
 
