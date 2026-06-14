@@ -81,6 +81,8 @@ const DEFAULT_TRAINING_PARAMS: Record<string, string> = {
   custom_sft_epochs: '2',
   custom_sft_only: '1',
   sft_base_checkpoint_id: '',
+  train_model_name: '',
+  sft_model_name: '',
   model_name: '',
 };
 const TRAINING_STATE_KEY = 'minigpt_training_monitor_state';
@@ -165,9 +167,16 @@ function downloadTextFile(filename: string, content: string, type = 'text/markdo
   URL.revokeObjectURL(url);
 }
 
-function getSavedModelName() {
+function getModelNameConfigKey(stage: 'train' | 'sft') {
+  return stage === 'train' ? 'train_model_name' : 'sft_model_name';
+}
+
+function getSavedModelName(stage: 'train' | 'sft' = 'train') {
   try {
     const saved = JSON.parse(localStorage.getItem('nanochat_config') || '{}') as Record<string, unknown>;
+    const stageKey = getModelNameConfigKey(stage);
+    const stageName = saved[stageKey];
+    if (typeof stageName === 'string' && stageName.trim()) return stageName.trim();
     return typeof saved.model_name === 'string' ? saved.model_name.trim() : '';
   } catch {
     return '';
@@ -184,6 +193,12 @@ function createDefaultModelName(stage: 'train' | 'sft', dataDomain = 'general') 
     String(now.getMinutes()).padStart(2, '0'),
   ].join('');
   return `${dataDomain}-${stage}-${stamp}`;
+}
+
+function createSftOutputModelName(baseName: string, dataDomain = 'general') {
+  const safeBaseName = baseName.trim() || createDefaultModelName('train', dataDomain);
+  const stamp = createDefaultModelName('sft', dataDomain).replace(`${dataDomain}-sft-`, '');
+  return `${safeBaseName}-sft-${stamp}`;
 }
 
 function getSavedSftBaseCheckpointId() {
@@ -212,7 +227,7 @@ function loadTrainingSnapshot(): TrainingMonitorSnapshot | null {
       currentPhase: data.currentPhase || 'prepare',
       phaseEvents: Array.isArray(data.phaseEvents) ? data.phaseEvents : [],
       errorMessage: data.errorMessage || '',
-      modelName: data.modelName || getSavedModelName(),
+      modelName: data.modelName || getSavedModelName(data.stage),
       updatedAt: typeof data.updatedAt === 'number' ? data.updatedAt : Date.now(),
     };
   } catch {
@@ -232,7 +247,7 @@ function createEmptyTrainingSnapshot(stage: 'train' | 'sft' = 'train'): Training
     currentPhase: 'prepare',
     phaseEvents: [],
     errorMessage: '',
-    modelName: getSavedModelName() || createDefaultModelName(stage),
+    modelName: getSavedModelName(stage) || createDefaultModelName(stage),
     updatedAt: Date.now(),
   };
 }
@@ -247,7 +262,11 @@ function getTrainingMonitorSnapshot(preferredStage?: 'train' | 'sft') {
   if (!trainingMonitorSnapshot) {
     trainingMonitorSnapshot = loadTrainingSnapshot() || createEmptyTrainingSnapshot(preferredStage || 'train');
     if (preferredStage && !trainingMonitorSnapshot.isRunning && trainingMonitorSnapshot.stage !== preferredStage) {
-      trainingMonitorSnapshot = { ...trainingMonitorSnapshot, stage: preferredStage };
+      trainingMonitorSnapshot = {
+        ...trainingMonitorSnapshot,
+        stage: preferredStage,
+        modelName: getSavedModelName(preferredStage) || createDefaultModelName(preferredStage),
+      };
     }
   }
   return trainingMonitorSnapshot;
@@ -360,20 +379,40 @@ export default function TrainingPage() {
       if (prev.stage === nextStage) return prev;
       return {
         ...createEmptyTrainingSnapshot(nextStage),
-        modelName: prev.modelName || getSavedModelName() || createDefaultModelName(nextStage),
+        modelName: getSavedModelName(nextStage) || createDefaultModelName(nextStage),
         logs: [`已切换到${nextStage === 'train' ? '预训练' : 'SFT 微调'}，上一阶段的监控事件已清空。`],
       };
     });
   }, []);
-  const handleSftBaseChange = useCallback((checkpointId: string) => {
-    setSftBaseCheckpointId(checkpointId);
+  const handleModelNameChange = useCallback((nextName: string) => {
+    setModelName(nextName);
     try {
       const saved = JSON.parse(localStorage.getItem('nanochat_config') || '{}') as Record<string, unknown>;
-      localStorage.setItem('nanochat_config', JSON.stringify({ ...saved, sft_base_checkpoint_id: checkpointId }));
+      localStorage.setItem('nanochat_config', JSON.stringify({ ...saved, [getModelNameConfigKey(stage)]: nextName }));
     } catch {
-      localStorage.setItem('nanochat_config', JSON.stringify({ sft_base_checkpoint_id: checkpointId }));
+      localStorage.setItem('nanochat_config', JSON.stringify({ [getModelNameConfigKey(stage)]: nextName }));
     }
-  }, []);
+  }, [setModelName, stage]);
+  const handleSftBaseChange = useCallback((checkpointId: string) => {
+    setSftBaseCheckpointId(checkpointId);
+    const selectedBase = baseCheckpoints.find((checkpoint) => checkpoint.path === checkpointId);
+    const suggestedModelName = selectedBase
+      ? createSftOutputModelName(selectedBase.name, selectedBase.dataDomain || 'general')
+      : createDefaultModelName('sft');
+    setModelName(suggestedModelName);
+    try {
+      const saved = JSON.parse(localStorage.getItem('nanochat_config') || '{}') as Record<string, unknown>;
+      localStorage.setItem(
+        'nanochat_config',
+        JSON.stringify({ ...saved, sft_base_checkpoint_id: checkpointId, sft_model_name: suggestedModelName })
+      );
+    } catch {
+      localStorage.setItem(
+        'nanochat_config',
+        JSON.stringify({ sft_base_checkpoint_id: checkpointId, sft_model_name: suggestedModelName })
+      );
+    }
+  }, [baseCheckpoints, setModelName]);
 
   const logsEndRef = useRef<HTMLDivElement>(null);
   const autoStartedRef = useRef(false);
@@ -553,14 +592,23 @@ export default function TrainingPage() {
       if (s === 'sft') {
         config.sft_base_checkpoint_id = sftBaseCheckpointId;
       }
-      const savedModelName = typeof config.model_name === 'string' ? config.model_name.trim() : '';
+      const modelNameKey = getModelNameConfigKey(s);
+      const stageModelName = config[modelNameKey];
+      const savedModelName = typeof stageModelName === 'string' && stageModelName.trim()
+        ? stageModelName.trim()
+        : typeof config.model_name === 'string'
+          ? config.model_name.trim()
+          : '';
       const resolvedModelName = savedModelName || modelName.trim() || createDefaultModelName(s, String(config.data_domain || DEFAULT_TRAINING_PARAMS.data_domain));
       if (resolvedModelName !== modelName) {
         setModelName(resolvedModelName);
       }
-      localStorage.setItem('nanochat_config', JSON.stringify({ ...config, model_name: resolvedModelName }));
+      localStorage.setItem(
+        'nanochat_config',
+        JSON.stringify({ ...config, [modelNameKey]: resolvedModelName, model_name: resolvedModelName })
+      );
       const params = new URLSearchParams();
-      const mergedConfig = { ...DEFAULT_TRAINING_PARAMS, ...config, model_name: resolvedModelName };
+      const mergedConfig = { ...DEFAULT_TRAINING_PARAMS, ...config, [modelNameKey]: resolvedModelName, model_name: resolvedModelName };
       Object.entries(mergedConfig).forEach(([k, v]) => {
         if (RUN_PARAM_KEYS.has(k) && v !== undefined && v !== null && v !== '') {
           params.set(k, String(v));
@@ -910,12 +958,20 @@ export default function TrainingPage() {
       <div className="mb-6 bg-surface-light border border-border rounded-xl p-4">
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
           <div className="space-y-1.5">
-            <span className="text-xs font-medium text-text-muted">模型名称</span>
-            <div className="w-full bg-surface border border-border rounded-lg px-3 py-2 text-sm text-text">
-              {modelName}
-            </div>
+            <span className="text-xs font-medium text-text-muted">
+              {stage === 'sft' ? '输出模型名称' : '模型名称'}
+            </span>
+            <input
+              value={modelName}
+              onChange={(e) => handleModelNameChange(e.target.value)}
+              disabled={isRunning}
+              placeholder={stage === 'sft' ? '例如 general-train-xuc1stgpt-sft-20260614' : '输入本次训练模型名称'}
+              className="w-full bg-surface border border-border rounded-lg px-3 py-2 text-sm text-text focus:outline-none focus:border-primary disabled:opacity-60"
+            />
             <p className="text-[11px] text-text-muted">
-              该名称来自“训练流程”的模型名称配置，并会写入 checkpoint 元数据。需要修改时，请返回“训练流程”调整。
+              {stage === 'sft'
+                ? '该名称用于保存本次 SFT 产物，不影响基座模型选择；基座模型由右侧下拉框决定。'
+                : '该名称会写入预训练 checkpoint 元数据，便于后续加载和区分模型。'}
             </p>
           </div>
           {stage === 'sft' && (
@@ -935,11 +991,11 @@ export default function TrainingPage() {
                 ))}
               </select>
               <p className="text-[11px] text-text-muted">
-                选择后，SFT 会精确基于该预训练 checkpoint；不选择则沿用自动查找逻辑。
+                选择后，SFT 会精确基于该预训练 checkpoint，并自动建议一个新的输出模型名称。
               </p>
               {selectedSftBase && (
                 <div className="rounded-lg border border-border bg-surface px-3 py-2 text-[11px] text-text-muted">
-                  将基于：{selectedSftBase.name} / {selectedSftBase.dataDomain || 'general'} / {selectedSftBase.datasetScope || 'default'} / d{selectedSftBase.depth} / step={selectedSftBase.step}
+                  基座：{selectedSftBase.name} / {selectedSftBase.dataDomain || 'general'} / {selectedSftBase.datasetScope || 'default'} / d{selectedSftBase.depth} / step={selectedSftBase.step}
                 </div>
               )}
             </div>

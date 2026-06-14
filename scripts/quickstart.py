@@ -976,6 +976,44 @@ class ChatRequest(BaseModel):
     repetition_penalty: float = 1.0
 
 
+def _message_value(message, key: str, default: str = ""):
+    if isinstance(message, dict):
+        return message.get(key, default)
+    return getattr(message, key, default)
+
+
+def build_chat_completion_tokens(tokenizer, messages):
+    """Render chat messages with the same template used by SFT training."""
+    bos_id = tokenizer.get_bos_token_id()
+    try:
+        normalized = []
+        for message in messages:
+            role = str(_message_value(message, "role", "")).strip()
+            content = str(_message_value(message, "content", ""))
+            if role not in {"system", "user", "assistant"}:
+                continue
+            if not content and role != "assistant":
+                continue
+            normalized.append({"role": role, "content": content})
+
+        if not normalized:
+            normalized = [{"role": "user", "content": ""}]
+        if normalized[-1]["role"] != "assistant":
+            normalized.append({"role": "assistant", "content": ""})
+
+        tokens = tokenizer.render_for_completion({"messages": normalized})
+        assistant_end = tokenizer.encode_special("<|assistant_end|>")
+        return tokens, {assistant_end, bos_id}
+    except Exception:
+        # Fallback for older tokenizers/checkpoints without chat special tokens.
+        tokens = [bos_id]
+        for message in messages:
+            content = str(_message_value(message, "content", ""))
+            if content:
+                tokens.extend(tokenizer.encode(content))
+        return tokens, {bos_id}
+
+
 @app.post("/chat/completions")
 async def chat_completions(request: ChatRequest):
     if loaded_engine is None or loaded_tokenizer is None:
@@ -983,34 +1021,7 @@ async def chat_completions(request: ChatRequest):
 
     tokenizer = loaded_tokenizer
     engine = loaded_engine
-    bos_id = tokenizer.get_bos_token_id()
-
-    # Build conversation tokens
-    try:
-        user_start = tokenizer.encode_special("<|user_start|>")
-        user_end = tokenizer.encode_special("<|user_end|>")
-        assistant_start = tokenizer.encode_special("<|assistant_start|>")
-        assistant_end = tokenizer.encode_special("<|assistant_end|>")
-        has_special = True
-    except Exception:
-        has_special = False
-
-    tokens = [bos_id]
-    if has_special:
-        for msg in request.messages:
-            if msg.role == "user":
-                tokens.append(user_start)
-                tokens.extend(tokenizer.encode(msg.content))
-                tokens.append(user_end)
-            elif msg.role == "assistant":
-                tokens.append(assistant_start)
-                tokens.extend(tokenizer.encode(msg.content))
-                tokens.append(assistant_end)
-        tokens.append(assistant_start)
-    else:
-        # Fallback: plain text
-        for msg in request.messages:
-            tokens.extend(tokenizer.encode(msg.content))
+    tokens, stop_tokens = build_chat_completion_tokens(tokenizer, request.messages)
 
     async def stream():
         import random
@@ -1025,7 +1036,7 @@ async def chat_completions(request: ChatRequest):
             seed=random.randint(0, 2**31 - 1),
         ):
             tok = token_column[0]
-            if has_special and (tok == assistant_end or tok == bos_id):
+            if tok in stop_tokens:
                 break
             accumulated.append(tok)
             try:

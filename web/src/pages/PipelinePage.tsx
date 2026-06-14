@@ -67,6 +67,8 @@ type DataSource = 'builtin' | 'custom_path' | 'upload';
 
 interface DataPrepConfig {
   model_name: string;
+  train_model_name: string;
+  sft_model_name: string;
   data_domain: DataDomain;
   data_source: DataSource;
   text_dataset: string;
@@ -94,6 +96,8 @@ interface RunSyncEvent {
 
 const defaultDataPrepConfig: DataPrepConfig = {
   model_name: '',
+  train_model_name: '',
+  sft_model_name: '',
   data_domain: 'general',
   data_source: 'builtin',
   text_dataset: 'text_general_raw.txt',
@@ -123,8 +127,18 @@ function createDefaultFlowModelName(dataDomain: DataDomain = 'general') {
   return `${dataDomain}-train-${stamp}`;
 }
 
+function createDefaultSftModelName(baseName: string, dataDomain: DataDomain = 'general') {
+  const safeBaseName = baseName.trim() || createDefaultFlowModelName(dataDomain);
+  const stamp = createDefaultFlowModelName(dataDomain).replace(`${dataDomain}-train-`, '');
+  return `${safeBaseName}-sft-${stamp}`;
+}
+
 function isAutoFlowModelName(modelName: string) {
   return /^(general|music)-train-\d{14}$/.test(modelName.trim());
+}
+
+function isAutoSftModelName(modelName: string) {
+  return /^.+-sft-\d{14}$/.test(modelName.trim());
 }
 
 const loadDataPrepConfig = ({ freshModelName = false } = {}): DataPrepConfig => {
@@ -134,15 +148,28 @@ const loadDataPrepConfig = ({ freshModelName = false } = {}): DataPrepConfig => 
     if (merged.music_dataset === 'starter_chords') {
       merged.music_dataset = 'music_starter_chords_raw.jsonl';
     }
+    if (!merged.train_model_name && merged.model_name) {
+      merged.train_model_name = merged.model_name;
+    }
+    if (!merged.sft_model_name && merged.model_name) {
+      merged.sft_model_name = createDefaultSftModelName(merged.train_model_name || merged.model_name, merged.data_domain);
+    }
     if (freshModelName) {
       const dataDomain: DataDomain = merged.data_domain === 'music' ? 'music' : 'general';
-      merged.model_name = createDefaultFlowModelName(dataDomain);
+      merged.train_model_name = createDefaultFlowModelName(dataDomain);
+      if (!merged.sft_model_name || isAutoSftModelName(merged.sft_model_name)) {
+        merged.sft_model_name = createDefaultSftModelName(merged.train_model_name, dataDomain);
+      }
+      merged.model_name = merged.train_model_name;
     }
     return merged;
   } catch {
+    const trainModelName = freshModelName ? createDefaultFlowModelName(defaultDataPrepConfig.data_domain) : '';
     return {
       ...defaultDataPrepConfig,
-      model_name: freshModelName ? createDefaultFlowModelName(defaultDataPrepConfig.data_domain) : '',
+      model_name: trainModelName,
+      train_model_name: trainModelName,
+      sft_model_name: trainModelName ? createDefaultSftModelName(trainModelName, defaultDataPrepConfig.data_domain) : '',
     };
   }
 };
@@ -380,9 +407,21 @@ export default function PipelinePage() {
       if (
         patch.data_domain &&
         patch.data_domain !== prev.data_domain &&
-        (!prev.model_name.trim() || isAutoFlowModelName(prev.model_name))
+        (!prev.train_model_name.trim() || isAutoFlowModelName(prev.train_model_name))
       ) {
-        next.model_name = createDefaultFlowModelName(patch.data_domain);
+        next.train_model_name = createDefaultFlowModelName(patch.data_domain);
+      }
+      if (
+        (patch.data_domain || patch.train_model_name) &&
+        (!prev.sft_model_name.trim() || isAutoSftModelName(prev.sft_model_name))
+      ) {
+        next.sft_model_name = createDefaultSftModelName(
+          next.train_model_name || next.model_name,
+          next.data_domain
+        );
+      }
+      if (patch.train_model_name !== undefined) {
+        next.model_name = next.train_model_name;
       }
       const saved = loadDataPrepConfig();
       localStorage.setItem('nanochat_config', JSON.stringify({ ...saved, ...next }));
@@ -539,6 +578,11 @@ export default function PipelinePage() {
 
       // If it's the train step, redirect to training monitor
       if (step.stage === 'train' || step.stage === 'sft') {
+        const outputModelName = step.stage === 'train'
+          ? dataPrepConfig.train_model_name
+          : dataPrepConfig.sft_model_name;
+        const config = { ...loadDataPrepConfig(), ...dataPrepConfig, model_name: outputModelName };
+        localStorage.setItem('nanochat_config', JSON.stringify(config));
         navigate('/training', { state: { autoStart: step.stage } });
         return;
       }
@@ -769,17 +813,17 @@ export default function PipelinePage() {
 
       <div className="p-3 grid grid-cols-1 xl:grid-cols-2 gap-3">
         <label className="space-y-1 xl:col-span-2">
-          <span className="text-xs font-medium text-text-muted">模型名称</span>
+          <span className="text-xs font-medium text-text-muted">预训练输出模型名称</span>
           <input
             type="text"
-            value={dataPrepConfig.model_name}
-            onChange={(e) => updateDataPrepConfig({ model_name: e.target.value })}
+            value={dataPrepConfig.train_model_name}
+            onChange={(e) => updateDataPrepConfig({ train_model_name: e.target.value })}
             className="w-full bg-surface border border-border rounded-lg px-3 py-1.5 text-sm text-text focus:outline-none focus:border-primary"
-            placeholder="例如：客服助手-v1、和弦生成实验-0501"
+            placeholder="例如：general-train-v1、和弦预训练-0501"
             maxLength={80}
           />
           <p className="text-[11px] text-text-muted">
-            训练保存后会显示在模型选择下拉框；不填写时系统会按数据类型和时间自动命名。
+            只用于预训练产物命名；SFT 会使用下方单独的输出模型名称，避免互相覆盖。
           </p>
         </label>
 
@@ -945,10 +989,32 @@ export default function PipelinePage() {
         <div className="xl:col-span-2 rounded-xl border border-primary/20 bg-primary/5 px-3 py-2">
           <div className="text-xs font-medium text-primary">SFT 问答数据</div>
           <label className="mt-2 block space-y-1">
+            <span className="text-xs font-medium text-text-muted">SFT 输出模型名称</span>
+            <input
+              type="text"
+              value={dataPrepConfig.sft_model_name}
+              onChange={(e) => updateDataPrepConfig({ sft_model_name: e.target.value })}
+              className="w-full bg-surface border border-border rounded-lg px-3 py-1.5 text-sm text-text focus:outline-none focus:border-primary"
+              placeholder="例如：general-train-v1-sft-0501"
+              maxLength={100}
+            />
+            <p className="text-[11px] text-text-muted">
+              只用于保存本次 SFT 产物；不会改变右侧选择的 SFT 基座模型。
+            </p>
+          </label>
+          <label className="mt-2 block space-y-1">
             <span className="text-xs font-medium text-text-muted">SFT 基座模型</span>
             <select
               value={dataPrepConfig.sft_base_checkpoint_id}
-              onChange={(e) => updateDataPrepConfig({ sft_base_checkpoint_id: e.target.value })}
+              onChange={(e) => {
+                const selectedBase = baseCheckpoints.find((checkpoint) => checkpoint.path === e.target.value);
+                updateDataPrepConfig({
+                  sft_base_checkpoint_id: e.target.value,
+                  sft_model_name: selectedBase
+                    ? createDefaultSftModelName(selectedBase.name, selectedBase.dataDomain === 'music' ? 'music' : 'general')
+                    : createDefaultSftModelName(dataPrepConfig.train_model_name, dataPrepConfig.data_domain),
+                });
+              }}
               className="w-full bg-surface border border-border rounded-lg px-3 py-1.5 text-sm text-text focus:outline-none focus:border-primary"
             >
               <option value="">自动选择：当前数据域 / 当前 depth 的最新预训练模型</option>
@@ -959,7 +1025,7 @@ export default function PipelinePage() {
               ))}
             </select>
             <p className="text-[11px] text-text-muted">
-              选择后，SFT 会精确基于该预训练 checkpoint；不选择则沿用旧逻辑自动找最新 base。
+              选择后，SFT 会精确基于该预训练 checkpoint，并自动建议新的 SFT 输出模型名称。
             </p>
           </label>
           {selectedSftBase && (
