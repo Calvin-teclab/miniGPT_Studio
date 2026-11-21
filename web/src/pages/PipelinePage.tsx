@@ -1,6 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { BookOpen, Database, Scissors, Sparkles, Upload } from 'lucide-react';
+import { Scissors, Workflow, Upload } from 'lucide-react';
 import StepCard, { type StepDetail } from '@/components/StepCard';
 import type { PipelineStep } from '@/types';
 import {
@@ -521,7 +521,7 @@ export default function PipelinePage() {
     getSampleDataset(selectedSampleId)
       .then((dataset) => {
         setEditorContent(dataset.content || '');
-        setEditorStatus(`已加载: ${dataset.path}`);
+        setEditorStatus('');
       })
       .catch((error) => {
         setEditorContent('');
@@ -802,17 +802,9 @@ export default function PipelinePage() {
   };
 
   const dataPrepPanel = (
-    <div className="border border-border rounded-xl bg-surface/70 overflow-hidden">
-      <div className="px-3 py-2 border-b border-border flex items-center gap-2">
-        <Database className="w-4 h-4 text-primary" />
-        <div>
-          <div className="text-sm font-medium">数据准备选项</div>
-          <p className="text-xs text-text-muted">先选择训练材料，再决定 tokenizer 如何把内容拆成 token。</p>
-        </div>
-      </div>
-
-      <div className="p-3 grid grid-cols-1 xl:grid-cols-2 gap-3">
-        <label className="space-y-1 xl:col-span-2">
+    <div className="border-t border-border pt-4">
+      <div className="grid grid-cols-1 gap-x-5 gap-y-3 md:grid-cols-2">
+        <label className="space-y-1 md:col-span-2">
           <span className="text-xs font-medium text-text-muted">预训练输出模型名称</span>
           <input
             type="text"
@@ -823,7 +815,7 @@ export default function PipelinePage() {
             maxLength={80}
           />
           <p className="text-[11px] text-text-muted">
-            只用于预训练产物命名；SFT 会使用下方单独的输出模型名称，避免互相覆盖。
+            微调模型可在下方的 SFT 设置中单独命名。
           </p>
         </label>
 
@@ -852,11 +844,6 @@ export default function PipelinePage() {
           </select>
         </label>
 
-        <div className="xl:col-span-2 rounded-lg border border-info/20 bg-info/10 px-3 py-2">
-          <div className="text-xs font-medium text-info">本次训练缓存目录：{cacheTarget}</div>
-          <p className="mt-0.5 text-[11px] text-text-muted">{cacheDescription}</p>
-        </div>
-
         {dataPrepConfig.data_source === 'builtin' && dataPrepConfig.data_domain === 'general' && (
           <label className="space-y-1">
             <span className="text-xs font-medium text-text-muted">可选文字数据集</span>
@@ -878,7 +865,7 @@ export default function PipelinePage() {
               ))}
             </select>
             <p className="text-[11px] text-text-muted">
-              选择 `sample_datasets` 中的原始数据后，可以在下方直接编辑并保存。
+              选择示例数据集后，可在下方编辑并保存原文。
             </p>
           </label>
         )}
@@ -898,14 +885,14 @@ export default function PipelinePage() {
               ))}
             </select>
             <p className="text-[11px] text-text-muted">
-              这些数据来自 `sample_datasets`，可以在下方编辑后直接作为训练输入。
+              可在下方编辑和弦数据，保存后用于训练。
             </p>
           </label>
         )}
 
         {dataPrepConfig.data_source === 'builtin' && selectedSample && (
-          <div className="xl:col-span-2 rounded-xl border border-border bg-surface overflow-hidden">
-            <div className="px-3 py-2 border-b border-border flex items-center justify-between gap-3">
+          <div className="md:col-span-2 rounded-xl border border-border bg-surface overflow-hidden">
+            <div className="px-3 py-2 flex items-center justify-between gap-3">
               <div className="min-w-0">
                 <div className="text-xs font-medium">编辑当前数据集：{selectedSample.label}</div>
                 <div className="text-[11px] text-text-muted truncate">{selectedSample.path}</div>
@@ -935,7 +922,7 @@ export default function PipelinePage() {
                 value={editorContent}
                 onChange={(e) => setEditorContent(e.target.value)}
                 spellCheck={false}
-                className="w-full min-h-32 bg-surface p-3 font-mono text-xs text-text focus:outline-none"
+                className="block w-full min-h-32 border-t border-border bg-surface p-3 font-mono text-xs text-text focus:outline-none"
                 placeholder="这里会显示可编辑的原始数据内容"
               />
             )}
@@ -948,7 +935,7 @@ export default function PipelinePage() {
         )}
 
         {dataPrepConfig.data_source === 'custom_path' && (
-          <label className="space-y-1 xl:col-span-2">
+          <label className="space-y-1 md:col-span-2">
             <span className="text-xs font-medium text-text-muted">本地数据集路径</span>
             <input
               type="text"
@@ -969,7 +956,7 @@ export default function PipelinePage() {
         )}
 
         {dataPrepConfig.data_source === 'upload' && (
-          <label className="space-y-1 xl:col-span-2">
+          <label className="space-y-1 md:col-span-2">
             <span className="text-xs font-medium text-text-muted">上传自定义数据集</span>
             <div className="flex items-center gap-3 rounded-lg border border-dashed border-border bg-surface px-3 py-2">
               <Upload className="w-4 h-4 text-primary" />
@@ -986,8 +973,15 @@ export default function PipelinePage() {
           </label>
         )}
 
-        <div className="xl:col-span-2 rounded-xl border border-primary/20 bg-primary/5 px-3 py-2">
-          <div className="text-xs font-medium text-primary">SFT 问答数据</div>
+        <div className="md:col-span-2 text-xs leading-relaxed text-text-muted">
+          缓存目录 <code className="break-all text-text">{cacheTarget}</code>
+          <p>{cacheDescription}</p>
+        </div>
+
+        <details className="md:col-span-2 rounded-lg border border-border px-3 py-2">
+          <summary className="cursor-pointer text-sm font-medium text-text-muted hover:text-text">
+            SFT 设置 · 问答数据与模型
+          </summary>
           <label className="mt-2 block space-y-1">
             <span className="text-xs font-medium text-text-muted">SFT 输出模型名称</span>
             <input
@@ -999,7 +993,7 @@ export default function PipelinePage() {
               maxLength={100}
             />
             <p className="text-[11px] text-text-muted">
-              只用于保存本次 SFT 产物；不会改变右侧选择的 SFT 基座模型。
+              微调完成后，使用此名称保存模型。
             </p>
           </label>
           <label className="mt-2 block space-y-1">
@@ -1048,13 +1042,13 @@ export default function PipelinePage() {
           <p className="mt-1 text-[11px] text-text-muted">
             仅在“SFT 微调”阶段传入，不会改变预训练数据缓存目录；支持 prompt/completion JSONL 或 messages 对话 JSONL。SFT 数据重复轮次请在“参数配置”中设置。
           </p>
-        </div>
+        </details>
 
-        <details className="xl:col-span-2 rounded-xl border border-border bg-surface px-3 py-2">
-          <summary className="cursor-pointer text-xs font-medium text-text-muted hover:text-text">
+        <details className="md:col-span-2 rounded-lg border border-border px-3 py-2">
+          <summary className="cursor-pointer text-sm font-medium text-text-muted hover:text-text">
             高级设置：分片、Tokenizer 与词表
           </summary>
-          <div className="mt-3 grid grid-cols-1 xl:grid-cols-2 gap-3">
+          <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-3">
             <label className="space-y-1">
               <span className="text-xs font-medium text-text-muted">数据分片数</span>
               <input
@@ -1119,30 +1113,22 @@ export default function PipelinePage() {
   );
 
   return (
-    <div className="px-5 py-6 lg:px-6 w-full">
-      {/* Header */}
-      <div className="mb-5">
-        <div className="flex items-center gap-3 mb-2">
-          <Sparkles className="w-6 h-6 text-primary" />
-          <h1 className="text-2xl font-bold">AI 模型训练流程</h1>
+    <div className="mx-auto w-full max-w-6xl px-3 py-5 sm:px-6 lg:py-7">
+      <header className="mb-4">
+        <div className="mb-2 flex items-center gap-2.5">
+          <Workflow className="size-6 text-primary-light" />
+          <h1 className="text-2xl font-bold">训练流程</h1>
         </div>
-        <p className="text-text-muted">
-          按照以下步骤，从零开始训练属于您自己的 AI 语言模型。若本机已有缓存产物，步骤会标记为“已检测到本地缓存”，您可以继续使用或重新运行。
+        <p className="text-sm leading-relaxed text-text-muted">
+          从准备数据到模型对话，共五步。已有缓存的步骤可以复用，也可以重新运行。
         </p>
-      </div>
-
-      {/* Info banner */}
-      <div className="mb-4 p-3 bg-info/10 border border-info/20 rounded-xl flex items-start gap-3">
-        <BookOpen className="w-5 h-5 text-info shrink-0 mt-0.5" />
-        <div className="text-sm">
-          <p className="font-medium text-info">新手指南</p>
-          <p className="text-text-muted mt-1">
-            训练一个 AI 模型就像培养一个学生：先给它教材（数据），再教它识字（分词器），然后让它大量阅读学习（预训练），最后教它如何正确回答问题（SFT微调）。鼠标悬停在每个步骤的 
-            <span className="text-primary"> ⓘ </span>
-            图标上可以查看详细说明。
+        <details className="mt-2 text-sm text-text-muted">
+          <summary className="w-fit cursor-pointer font-medium text-primary-light">新手指南</summary>
+          <p className="mt-2 max-w-prose leading-relaxed">
+            先准备训练数据，再训练分词器，把文本拆成模型能处理的 token。预训练让模型学习预测下一个 token，SFT 微调则用问答样例教它回应提问。展开每个步骤的详情，可以查看所需输入和预期产物。
           </p>
-        </div>
-      </div>
+        </details>
+      </header>
 
       {/* Steps */}
       <div className="space-y-3">
