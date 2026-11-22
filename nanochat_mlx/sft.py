@@ -159,7 +159,6 @@ def sft(args):
 
     # --- SFT data mixture ---
     identity_filepath = os.path.join(base_dir, "identity_conversations.jsonl")
-    _ensure_identity_conversations(identity_filepath)
 
     custom_sft_path = getattr(args, "custom_sft_path", "")
     custom_sft_epochs = max(0, getattr(args, "custom_sft_epochs", 0))
@@ -175,6 +174,7 @@ def sft(args):
             f"({custom_task.num_examples():,} rows x{custom_sft_epochs}, only={custom_sft_only})"
         )
     if not custom_sft_path or not custom_sft_only:
+        _ensure_identity_conversations(identity_filepath)
         train_tasks.extend([
             SmolTalk(split="train"),
             CustomJSON(filepath=identity_filepath),
@@ -191,12 +191,13 @@ def sft(args):
         f"MMLU x{args.mmlu_epochs}, GSM8K x{args.gsm8k_epochs})"
     )
 
-    val_dataset = TaskMixture([
-        SmolTalk(split="test"),
-        MMLU(subset="all", split="test", stop=5200),
-        GSM8K(subset="main", split="test", stop=420),
-    ])
-    print0(f"Validation mixture: {len(val_dataset):,} rows")
+    if args.eval_steps > 0:
+        val_dataset = TaskMixture([
+            SmolTalk(split="test"),
+            MMLU(subset="all", split="test", stop=5200),
+            GSM8K(subset="main", split="test", stop=420),
+        ])
+        print0(f"Validation mixture: {len(val_dataset):,} rows")
 
     # --- Batch sizes ---
     B = args.device_batch_size
@@ -266,7 +267,7 @@ def sft(args):
 
     while True:
         # --- Evaluation ---
-        if last_step or (args.eval_every > 0 and step % args.eval_every == 0 and step > 0):
+        if args.eval_steps > 0 and (last_step or (args.eval_every > 0 and step % args.eval_every == 0 and step > 0)):
             val_loader = sft_dataloader_bos_bestfit(val_dataset, tokenizer, B, T)
             val_loss = 0.0
             eval_steps = min(args.eval_steps, 20)

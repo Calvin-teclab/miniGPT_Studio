@@ -1,5 +1,5 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { Scissors, Workflow, Upload } from 'lucide-react';
 import StepCard, { type StepDetail } from '@/components/StepCard';
 import type { PipelineStep } from '@/types';
@@ -1122,6 +1122,7 @@ export default function PipelinePage() {
         <p className="text-sm leading-relaxed text-text-muted">
           从准备数据到模型对话，共五步。已有缓存的步骤可以复用，也可以重新运行。
         </p>
+        <Link className="my-3 inline-block text-sm font-medium text-primary-light" to="/experiments?new=sft">运行示例微调实验 →</Link>
         <details className="mt-2 text-sm text-text-muted">
           <summary className="w-fit cursor-pointer font-medium text-primary-light">新手指南</summary>
           <p className="mt-2 max-w-prose leading-relaxed">

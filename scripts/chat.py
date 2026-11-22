@@ -6,7 +6,6 @@ Usage:
     python -m scripts.chat --interactive
 """
 
-import os
 import argparse
 
 import mlx.core as mx
@@ -16,10 +15,10 @@ from nanochat_mlx.gpt import GPT, GPTConfig
 from nanochat_mlx.preflight import require_checkpoint
 from nanochat_mlx.train import _load_weights_into_model
 from nanochat_mlx.engine import Engine
-from nanochat_mlx.common import print0, get_base_dir, set_memory_limit
+from nanochat_mlx.common import print0, set_memory_limit
 
 
-def load_model(depth=12, step=None, source="base", model_name=None):
+def load_model(depth=12, step=None, source="base", model_name=None, *, meta_path=None):
     """Load a trained MLX model from checkpoint.
 
     Args:
@@ -28,13 +27,12 @@ def load_model(depth=12, step=None, source="base", model_name=None):
         source: "base" for pretrained, "sft" for fine-tuned
         model_name: optional checkpoint display name, used to disambiguate same-step runs
     """
-    base_dir = get_base_dir()
-    if source == "sft":
-        ckpt_dir = os.path.join(base_dir, "mlx_checkpoints", f"d{depth}_sft")
+    if meta_path is None:
+        weights_path, meta_path = require_checkpoint(
+            depth=depth, step=step, source=source, model_name=model_name
+        )
     else:
-        ckpt_dir = os.path.join(base_dir, "mlx_checkpoints", f"d{depth}")
-
-    weights_path, meta_path = require_checkpoint(depth=depth, source=source, step=step, model_name=model_name)
+        weights_path = str(meta_path).removesuffix("_meta.json") + ".safetensors"
 
     # Load metadata
     import json

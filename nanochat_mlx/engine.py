@@ -175,7 +175,7 @@ class Engine:
         )
         return mx.concatenate([logits[:, :valid_vocab_size], invalid], axis=-1)
 
-    def generate(self, tokens, num_samples=1, max_tokens=None, temperature=1.0, top_k=None, seed=42, repetition_penalty=1.0):
+    def generate(self, tokens, num_samples=1, max_tokens=None, temperature=1.0, top_k=None, seed=42, repetition_penalty=1.0, enable_tools=True):
         """
         Autoregressive generation with KV cache.
         Yields (token_column, token_masks) per step.
@@ -240,7 +240,7 @@ class Engine:
 
                 if next_token == assistant_end or next_token == bos:
                     state.completed = True
-                if next_token == python_start:
+                if enable_tools and next_token == python_start:
                     state.in_python_block = True
                     state.python_expr_tokens = []
                 elif next_token == python_end and state.in_python_block:

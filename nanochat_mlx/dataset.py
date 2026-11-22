@@ -44,7 +44,10 @@ def list_parquet_files(data_dir=None):
 def get_split_parquet_files(split, data_dir=None):
     """Return the parquet paths for a logical train/val split."""
     assert split in ["train", "val"], "split must be 'train' or 'val'"
-    parquet_paths = list_parquet_files(data_dir)
+    try:
+        parquet_paths = list_parquet_files(data_dir)
+    except FileNotFoundError:
+        parquet_paths = []
 
     if not parquet_paths:
         raise SetupError(

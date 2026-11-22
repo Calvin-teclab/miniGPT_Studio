@@ -12,7 +12,7 @@ from nanochat_mlx.dataset import get_split_parquet_files, list_parquet_files
 
 def require_training_data():
     """Ensure there is enough downloaded data to build a train split."""
-    train_paths = get_split_parquet_files("train")
+    train_paths = get_split_parquet_files("train", os.path.join(get_base_dir(), "base_data"))
 
     for path in train_paths:
         pf = pq.ParquetFile(path)

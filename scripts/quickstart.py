@@ -199,18 +199,27 @@ def is_chinese_online_dataset(text_dataset: str = ""):
     return (text_dataset or "").startswith("chinese_")
 
 
-def get_general_base_dir(data_source: str = "builtin", custom_data_path: str = "", text_dataset: str = ""):
+def get_general_base_dir(data_source: str = "builtin", custom_data_path: str = "", text_dataset: str = "fineweb_edu"):
     source = (data_source or "builtin").lower()
     if is_chinese_online_dataset(text_dataset):
         return get_chinese_general_base_dir()
     if source in {"custom_path", "upload"} or custom_data_path:
         return get_custom_general_base_dir()
+    if not text_dataset:
+        return get_base_dir()
     return get_fineweb_base_dir()
+
+
+def experiments_dir():
+    return os.path.abspath(os.environ.get("MINIGPT_EXPERIMENTS_DIR") or
+                           os.path.join(os.path.dirname(__file__), "..", "exports", "experiments"))
 
 
 def get_base_dir_for_key(data_domain: str, base_key: Optional[str] = None):
     if data_domain == "music":
         return get_music_base_dir()
+    if base_key and re.fullmatch(r"exp_[a-f0-9]{32}", base_key):
+        return os.path.join(experiments_dir(), base_key[4:], "base")
     if base_key == "fineweb":
         return get_fineweb_base_dir()
     if base_key == "custom":
@@ -241,6 +250,10 @@ def iter_training_bases():
         ("general", "legacy", get_base_dir()),
         ("music", "music", get_music_base_dir()),
     ]
+    if os.path.isdir(experiments_dir()):
+        for name in sorted(os.listdir(experiments_dir())):
+            if re.fullmatch(r"[a-f0-9]{32}", name):
+                candidates.append(("general", "exp_" + name, os.path.join(experiments_dir(), name, "base")))
     for data_domain, base_key, base in candidates:
         real = os.path.realpath(base)
         if real in seen:
@@ -249,7 +262,7 @@ def iter_training_bases():
         yield data_domain, base_key, base
 
 
-def get_stage_env(data_domain: str, data_source: str = "builtin", custom_data_path: str = "", text_dataset: str = ""):
+def get_stage_env(data_domain: str, data_source: str = "builtin", custom_data_path: str = "", text_dataset: str = "fineweb_edu"):
     env = {**os.environ, "PYTHONUNBUFFERED": "1"}
     if data_domain == "music":
         env["NANOCHAT_BASE_DIR"] = get_music_base_dir()
@@ -267,7 +280,7 @@ def normalize_model_name(model_name: str, data_domain: str, stage: str):
     return f"{prefix}-{stage}-{time.strftime('%Y%m%d-%H%M%S')}"
 
 
-def check_status():
+def check_status(*, use_legacy_base=False):
     """Check which pipeline stages are complete by inspecting the filesystem."""
     def inspect_base(base):
         tok_path = os.path.join(base, "tokenizer", "tokenizer.pkl")
@@ -309,51 +322,14 @@ def check_status():
     chinese_general = inspect_base(get_chinese_general_base_dir())
     legacy_general = inspect_base(get_base_dir())
     music = inspect_base(get_music_base_dir())
-    general = fineweb
-    base = get_fineweb_base_dir()
-    tok_path = os.path.join(base, "tokenizer", "tokenizer.pkl")
-    ckpt_base = os.path.join(base, "mlx_checkpoints")
-    shard_count = count_downloaded_shards(base)
-
-    data_ready = shard_count >= 2
-
-    tok_ready = os.path.isfile(tok_path)
-
-    # Find all trained depths (base models)
-    trained = {}
-    sft_trained = {}
-    if os.path.isdir(ckpt_base):
-        for d in sorted(os.listdir(ckpt_base)):
-            if not d.startswith("d"):
-                continue
-            is_sft = d.endswith("_sft")
-            depth_str = d[1:].replace("_sft", "") if is_sft else d[1:]
-            if not depth_str.isdigit():
-                continue
-            depth = int(depth_str)
-            dpath = os.path.join(ckpt_base, d)
-            safetensors = [
-                f for f in os.listdir(dpath)
-                if f.endswith(".safetensors") and not f.endswith("_optim.safetensors")
-            ]
-            if safetensors:
-                if is_sft:
-                    sft_trained[depth] = len(safetensors)
-                else:
-                    trained[depth] = len(safetensors)
-
     chat_ready = loaded_engine is not None
 
     return {
-        "data": data_ready,
-        "data_shards": shard_count,
-        "tokenizer": tok_ready,
-        "train": trained,
-        "sft": sft_trained,
+        **(legacy_general if use_legacy_base else fineweb),
         "chat": chat_ready,
         "chat_model": {"depth": loaded_depth, "step": loaded_step, "source": loaded_source, "data_domain": loaded_domain, "model_name": loaded_model_name} if chat_ready else None,
         "running": running_process_claimed or (running_process is not None and running_process.returncode is None),
-        "general": general,
+        "general": fineweb,
         "custom_general": custom_general,
         "chinese_general": chinese_general,
         "legacy_general": legacy_general,
@@ -396,7 +372,7 @@ async def favicon():
 
 @app.get("/status")
 async def status():
-    return check_status()
+    return check_status(use_legacy_base=True)
 
 
 def preflight_stage(stage: str, depth: int, step: int, model_name: str = None):
@@ -446,7 +422,7 @@ async def run_stage(stage: str, n_shards: int = 4, depth: int = 4,
                     music_data_path: str = "",
                     data_source: str = "builtin",
                     custom_data_path: str = "",
-                    text_dataset: str = "fineweb_edu",
+                    text_dataset: str = "",
                     tokenizer_method: str = "bpe",
                     vocab_size: int = 32768,
                     doc_cap: int = 10000,
@@ -540,7 +516,9 @@ async def run_stage(stage: str, n_shards: int = 4, depth: int = 4,
                    f"--memory-limit-gb={memory_limit_gb}",
                    f"--eval-every={eval_every}",
                    f"--model-name={checkpoint_model_name}"]
-            if base_model_name:
+            if eval_every < 0:
+                cmd.append("--eval-steps=0")
+            if base_model_name is not None:
                 cmd.append(f"--base-model-name={base_model_name}")
             if custom_sft_path:
                 resolved_sft_path = custom_sft_path
@@ -578,6 +556,13 @@ async def run_stage(stage: str, n_shards: int = 4, depth: int = 4,
         except OSError:
             pass
 
+    if stage in {"train", "sft"}:
+        stage_env.update(MINIGPT_RECORD_STAGE="1", MINIGPT_DATA_DOMAIN=data_domain,
+                         MINIGPT_DATA_SCOPE=(resolved_base["base_key"] if stage == "sft" and sft_base_checkpoint_id
+                                             else get_base_key(data_domain, stage_env["NANOCHAT_BASE_DIR"])))
+    from scripts.experiments import reserve
+    claim = reserve()
+    claim.__enter__()
     running_process_claimed = True
 
     async def stream():
@@ -641,6 +626,7 @@ async def run_stage(stage: str, n_shards: int = 4, depth: int = 4,
         finally:
             running_process = None
             running_process_claimed = False
+            claim.__exit__(None, None, None)
 
     return StreamingResponse(stream(), media_type="text/event-stream")
 
@@ -657,7 +643,7 @@ async def run_stage_sync(stage: str, n_shards: int = 4, depth: int = 4,
                          music_data_path: str = "",
                          data_source: str = "builtin",
                          custom_data_path: str = "",
-                         text_dataset: str = "fineweb_edu",
+                         text_dataset: str = "",
                          tokenizer_method: str = "bpe",
                          vocab_size: int = 32768,
                          doc_cap: int = 10000,
@@ -749,6 +735,8 @@ async def list_checkpoints():
             depth = int(depth_str)
             source = "sft" if is_sft else "base"
             dpath = os.path.join(ckpt_base, d)
+            if os.path.isfile(os.path.join(dpath, ".input-copy")):
+                continue
             for f in sorted(os.listdir(dpath)):
                 if f.endswith("_meta.json"):
                     meta_path = os.path.join(dpath, f)
@@ -935,7 +923,8 @@ async def chat_load(req: LoadRequest):
         else:
             os.environ["NANOCHAT_BASE_DIR"] = get_base_dir()
         try:
-            model = load_model(depth=req.depth, step=req.step, source=req.source, model_name=req.model_name)
+            model = load_model(depth=req.depth, step=req.step, source=req.source, model_name=req.model_name,
+                               meta_path=resolved["meta_path"] if resolved else None)
             tokenizer = get_tokenizer()
         finally:
             if old_base_dir is None:

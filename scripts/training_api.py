@@ -929,6 +929,9 @@ async def api_eval_external(request: ExternalEvalRequest):
 # Include the API router
 # ---------------------------------------------------------------------------
 
+from scripts.experiments import router as experiments_router
+
+api.include_router(experiments_router)
 app.include_router(api)
 
 

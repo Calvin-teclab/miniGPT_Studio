@@ -14,6 +14,7 @@ Prerequisites:
 """
 
 import argparse
+import os
 
 from nanochat_mlx.common import SetupError, print_setup_error
 from nanochat_mlx.sft import sft
@@ -69,7 +70,11 @@ def build_parser():
 def main(argv=None):
     args = build_parser().parse_args(argv)
     try:
-        sft(args)
+        if os.environ.get("MINIGPT_RECORD_STAGE") == "1":
+            from scripts.training_record import recorded_training
+            recorded_training("sft", args, sft)
+        else:
+            sft(args)
         return 0
     except SetupError as exc:
         print_setup_error(exc)

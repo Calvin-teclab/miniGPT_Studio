@@ -1,3 +1,4 @@
+import { Link, useSearchParams } from 'react-router-dom';
 import { useState, useEffect, useRef, useCallback } from 'react';
 import {
   MessageCircle,
@@ -14,11 +15,13 @@ import {
 import ParamTooltip from '@/components/ParamTooltip';
 import { cn } from '@/lib/utils';
 import type { ChatMessage, ChatSettings, Checkpoint } from '@/types';
-import { deleteCheckpoint, getCheckpoints, loadModel, unloadModel } from '@/api/client';
+import { deleteCheckpoint, getAllCheckpoints, getCheckpoints, loadModel, unloadModel } from '@/api/client';
 
 export default function ChatPage() {
   const [checkpoints, setCheckpoints] = useState<Checkpoint[]>([]);
-  const [selectedCheckpoint, setSelectedCheckpoint] = useState('');
+  const [params] = useSearchParams();
+  const requested = params.get('checkpoint');
+  const [selectedCheckpoint, setSelectedCheckpoint] = useState(requested || '');
   const [loadedCheckpoint, setLoadedCheckpoint] = useState('');
   const [isLoaded, setIsLoaded] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
@@ -52,12 +55,13 @@ export default function ChatPage() {
   }, [messages]);
 
   const refreshCheckpoints = useCallback(() => {
-    getCheckpoints()
+    (requested ? getAllCheckpoints() : getCheckpoints())
       .then((cps) => {
         const chatCheckpoints = cps.filter((c) => c.dataDomain !== 'music');
         setCheckpoints(chatCheckpoints);
         setSelectedCheckpoint((current) => {
           if (current && chatCheckpoints.some((c) => c.path === current)) return current;
+          if (requested) return chatCheckpoints.some(c => c.path === requested) ? requested : '';
           // Prefer SFT checkpoints in the general chat domain.
           const sft = chatCheckpoints.find((c) => c.isSft);
           if (sft) return sft.path;
@@ -66,7 +70,7 @@ export default function ChatPage() {
         });
       })
       .catch(() => {});
-  }, []);
+  }, [requested]);
 
   useEffect(() => {
     refreshCheckpoints();
@@ -292,6 +296,7 @@ export default function ChatPage() {
           <div className="flex items-center gap-3 mb-2">
             <MessageCircle className="w-6 h-6 text-primary" />
             <h1 className="text-2xl font-bold">模型对话</h1>
+            {params.get('experiment') && <Link className="text-sm text-primary-light" to={'/experiments?id='+params.get('experiment')}>返回实验记录</Link>}
             {isLoaded && (
               <span className="px-2 py-0.5 bg-success/20 text-success text-xs rounded-full">
                 已加载

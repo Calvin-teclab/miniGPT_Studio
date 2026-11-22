@@ -1,11 +1,12 @@
 import { NavLink, Outlet, useMatch } from 'react-router-dom';
-import { Activity, FlaskConical, MessageCircle, Music2, Settings, Workflow } from 'lucide-react';
+import { Activity, NotebookText, FlaskConical, MessageCircle, Music2, Settings, Workflow } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 const navItems = [
   { to: '/', icon: Workflow, label: '训练流程' },
   { to: '/config', icon: Settings, label: '参数配置' },
   { to: '/training', icon: Activity, label: '训练监控' },
+  { to: '/experiments', icon: NotebookText, label: '实验记录' },
   { to: '/eval', icon: FlaskConical, label: '模型评测' },
   { to: '/chat', icon: MessageCircle, label: '模型对话' },
   { to: '/music', icon: Music2, label: '音乐生成' },

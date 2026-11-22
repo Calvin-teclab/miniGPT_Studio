@@ -1,3 +1,4 @@
+import { Link } from 'react-router-dom';
 import { useState, useRef } from 'react';
 import {
   FlaskConical,
@@ -293,6 +294,7 @@ export default function EvalPage() {
         </p>
       </div>
 
+      <Link className="my-3 inline-block text-sm font-medium text-primary-light" to="/experiments?new=compare">用同一题集比较本地模型 →</Link>
       {/* Checkpoint selector */}
       <div className="mb-6 bg-surface-light border border-border rounded-xl p-4">
         <div className="flex items-center gap-3">

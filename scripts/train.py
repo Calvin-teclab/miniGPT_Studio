@@ -12,6 +12,7 @@ Prerequisites:
 """
 
 import argparse
+import os
 
 from nanochat_mlx.common import SetupError, print_setup_error
 from nanochat_mlx.train import train
@@ -68,7 +69,11 @@ def main(argv=None):
         print(f"Defaulting to {args.num_iterations} iterations for depth={args.depth}")
 
     try:
-        train(args)
+        if os.environ.get("MINIGPT_RECORD_STAGE") == "1":
+            from scripts.training_record import recorded_training
+            recorded_training("train", args, train)
+        else:
+            train(args)
         return 0
     except SetupError as exc:
         print_setup_error(exc)
